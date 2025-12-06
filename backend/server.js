@@ -1,9 +1,8 @@
 // backend/server.js
 // Base Beast backend – v0.18
-// - Activity Days и tx_count считаются по реальной истории tx (Etherscan v2 / Blockscout / Moralis fallback)
-// - gas_spent считает суммарный газ в ETH с дробной частью
-// - DeFi Swaps, DeFi Volume, Liquidity, NFT mints – через Moralis
-// - Добавлен manual-builder & manual-social для избранных адресов
+// - All core metrics onchain-based (Blockscout + Moralis)
+// - Manual builder & social scores from .env
+// - Dynamic NFT metadata endpoint using onchain BeastScoreRegistry
 
 import express from "express";
 import cors from "cors";
@@ -11,68 +10,88 @@ import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
+import { ethers } from "ethers";
 
 dotenv.config();
 
-// API keys
-const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY || "";
-const MORALIS_API_KEY = process.env.MORALIS_API_KEY || "";
-
-/**
- * MANUAL_SCORES — ручные оверрайды для builder / social по адресам.
- * КЛЮЧИ ОБЯЗАТЕЛЬНО В НИЖНЕМ РЕГИСТРЕ.
- *
- * builder_score: 0–100
- * social_score:  0–100
- *
- * Ты можешь добавлять сюда свои кошельки и скоры.
- */
-const MANUAL_SCORES = {
-  // Пример: твой текущий кошелёк
-  "0xfd32507b33220e1be82e9bb83b4ea74d4b59cb25": {
-    builder_score: 65, // Base builder vibes
-    social_score: 30   // Active / Voice
-  }
-
-  // Можно добавлять другие адреса:
-  // "0x1234....abcd": { builder_score: 90, social_score: 80 }
-};
-
+// -----------------------------
 // ESM helpers
+// -----------------------------
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// -----------------------------
+// Env / config
+// -----------------------------
+const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY || "";
+const MORALIS_API_KEY = process.env.MORALIS_API_KEY || "";
+
+const RPC_URL = process.env.RPC_URL || "";
+const BEAST_NFT_ADDRESS = process.env.BEAST_NFT_ADDRESS || "";
+const BEAST_REGISTRY_ADDRESS = process.env.BEAST_REGISTRY_ADDRESS || "";
+
+const MANUAL_BUILDER_SCORE_RAW =
+  process.env.MANUAL_BUILDER_SCORE !== undefined
+    ? Number(process.env.MANUAL_BUILDER_SCORE)
+    : undefined;
+
+const MANUAL_SOCIAL_SCORE_RAW =
+  process.env.MANUAL_SOCIAL_SCORE !== undefined
+    ? Number(process.env.MANUAL_SOCIAL_SCORE)
+    : undefined;
+
+// Onchain provider + minimal ABIs
+let rpcProvider = null;
+if (RPC_URL) {
+  rpcProvider = new ethers.JsonRpcProvider(RPC_URL);
+} else {
+  console.warn(
+    "⚠️ RPC_URL is missing, onchain NFT metadata will use static fallback."
+  );
+}
+
+const BEAST_REGISTRY_ABI = [
+  "function getScore(address user) view returns (tuple(uint8 activityDaysTier,uint8 txCountTier,uint8 defiSwapsTier,uint8 liquidityTier,uint8 builderTier,uint8 nftMintsTier,uint8 socialTier,uint8 gasSpentTier,uint8 defiVolumeTier,uint8 overallTier))",
+];
+
+const BEAST_NFT_ABI = [
+  "function ownerOf(uint256 tokenId) view returns (address)",
+];
+
+// -----------------------------
+// Express app
+// -----------------------------
 const app = express();
 const PORT = process.env.PORT || 4000;
 
 app.use(cors());
 app.use(express.json());
 
-// ----------------------------------------------------
+// -----------------------------
 // Utils: load JSON from mocks
-// ----------------------------------------------------
+// -----------------------------
 async function loadJsonFromMocks(filename) {
   const filePath = path.join(__dirname, "mocks", filename);
   const raw = await fs.readFile(filePath, "utf8");
   return JSON.parse(raw);
 }
 
-// ----------------------------------------------------
-// Helper: fetch tx stats (Etherscan v2 / Blockscout → Moralis)
-// ----------------------------------------------------
+// -----------------------------
+// Tx stats: Blockscout (fallback после Etherscan)
+// -----------------------------
 //
 // Возвращает:
 //   { txCount, activityDays, gasSpentNative }
 //
 // txCount        — количество исходящих tx (from == address)
-// activityDays   — число уникальных дней, когда был хотя бы 1 tx (from или to)
+// activityDays   — число уникальных дней по всем tx (from или to)
 // gasSpentNative — суммарный gasUsed * gasPrice по исходящим успешным tx, в ETH
 //
 async function fetchTxStats(address) {
   const lowerAddr = String(address || "").toLowerCase();
   const defaults = { txCount: 0, activityDays: 0, gasSpentNative: 0 };
 
-  // ---------- 1) Etherscan v2 по chainid=8453 (Base) ----------
+  // 1) Сначала пробуем через Etherscan (может вернуть NOTOK на Base free-tier)
   if (ETHERSCAN_API_KEY) {
     try {
       const url = new URL("https://api.etherscan.io/v2/api");
@@ -86,18 +105,10 @@ async function fetchTxStats(address) {
       url.searchParams.set("apikey", ETHERSCAN_API_KEY);
 
       console.log("[TxStats] (Etherscan) Fetching:", url.toString());
-      const res = await fetch(url.toString());
+      const res = await fetch(url);
 
-      if (!res.ok) {
-        const text = await res.text();
-        console.error(
-          "[TxStats] (Etherscan) HTTP error:",
-          res.status,
-          text.slice(0, 300)
-        );
-      } else {
+      if (res.ok) {
         const json = await res.json();
-
         if (json.status === "1" && Array.isArray(json.result)) {
           let outgoingCount = 0;
           const activeDays = new Set();
@@ -115,42 +126,51 @@ async function fetchTxStats(address) {
             if (from === lowerAddr) {
               outgoingCount += 1;
 
-              if (String(tx.isError) === "1") continue;
+              if (tx.isError === "1") continue;
 
               try {
                 const gasUsed = BigInt(tx.gasUsed || "0");
                 const gasPrice = BigInt(tx.gasPrice || "0");
                 totalGasWei += gasUsed * gasPrice;
               } catch (err) {
-                console.warn("[TxStats] (Etherscan) BigInt parse failed", err);
+                console.warn(
+                  "[TxStats] (Etherscan) BigInt parse failed",
+                  err
+                );
               }
             }
           }
 
-          const txCount = outgoingCount;
-          const activityDays = activeDays.size;
           const gasSpentNative =
-            totalGasWei > 0n ? Number(totalGasWei) / 1e18 : 0;
+            totalGasWei > 0n
+              ? Number(totalGasWei / 1000000000000000000n)
+              : 0;
 
-          console.log(
-            `[TxStats] (Etherscan) txCount=${txCount}, activityDays=${activityDays}, gasSpent=${gasSpentNative} ETH`
-          );
-
-          return { txCount, activityDays, gasSpentNative };
+          return {
+            txCount: outgoingCount,
+            activityDays: activeDays.size,
+            gasSpentNative,
+          };
         } else {
           console.warn(
             "[TxStats] (Etherscan) Empty result or error:",
-            json.message,
-            json.result
+            json.message
           );
         }
+      } else {
+        const text = await res.text();
+        console.error(
+          "[TxStats] (Etherscan) HTTP error:",
+          res.status,
+          text.slice(0, 300)
+        );
       }
     } catch (err) {
       console.error("[TxStats] (Etherscan) error:", err);
     }
   }
 
-  // ---------- 2) Blockscout (без ключа) ----------
+  // 2) Основной путь для Base: Blockscout
   try {
     const url = new URL("https://base.blockscout.com/api");
     url.searchParams.set("module", "account");
@@ -161,7 +181,7 @@ async function fetchTxStats(address) {
     url.searchParams.set("sort", "asc");
 
     console.log("[TxStats] (Blockscout) Fetching:", url.toString());
-    const res = await fetch(url.toString());
+    const res = await fetch(url);
 
     if (!res.ok) {
       const text = await res.text();
@@ -170,128 +190,61 @@ async function fetchTxStats(address) {
         res.status,
         text.slice(0, 300)
       );
-    } else {
-      const json = await res.json();
-      const hasOkStatus =
-        json.status === "1" ||
-        String(json.message || "").toUpperCase() === "OK";
+      return defaults;
+    }
 
-      if (hasOkStatus && Array.isArray(json.result)) {
-        let outgoingCount = 0;
-        const activeDays = new Set();
-        let totalGasWei = 0n;
+    const json = await res.json();
+    const result = Array.isArray(json.result) ? json.result : [];
 
-        for (const tx of json.result) {
-          const from = String(tx.from || tx.from_address || "").toLowerCase();
-          const ts = Number(
-            tx.timeStamp ||
-              tx.timestamp ||
-              tx.time ||
-              tx.block_timestamp ||
-              0
-          );
+    let outgoingCount = 0;
+    const activeDays = new Set();
+    let totalGasWei = 0n;
 
-          if (ts > 0) {
-            const day = new Date(ts * 1000).toISOString().slice(0, 10);
-            activeDays.add(day);
-          }
+    for (const tx of result) {
+      const from = String(tx.from || "").toLowerCase();
+      const ts = Number(tx.timeStamp || tx.timestamp || 0);
 
-          if (from === lowerAddr) {
-            outgoingCount += 1;
+      if (ts > 0) {
+        const day = new Date(ts * 1000).toISOString().slice(0, 10);
+        activeDays.add(day);
+      }
 
-            const isErrorVal =
-              tx.isError ?? tx.txreceipt_status ?? tx.status ?? "0";
-            const isErrorStr = String(isErrorVal);
-            if (isErrorStr === "1" || isErrorStr === "0x1") continue;
+      if (from === lowerAddr) {
+        outgoingCount += 1;
 
-            try {
-              const gasUsedRaw = tx.gasUsed ?? tx.gas_used ?? tx.gas ?? "0";
-              const gasPriceRaw = tx.gasPrice ?? tx.gas_price ?? "0";
-              const gasUsed = BigInt(String(gasUsedRaw));
-              const gasPrice = BigInt(String(gasPriceRaw));
-              totalGasWei += gasUsed * gasPrice;
-            } catch (err) {
-              console.warn("[TxStats] (Blockscout) BigInt parse failed", err);
-            }
-          }
+        if (tx.isError === "1") continue;
+
+        try {
+          const gasUsed = BigInt(tx.gasUsed || "0");
+          const gasPrice = BigInt(tx.gasPrice || "0");
+          totalGasWei += gasUsed * gasPrice;
+        } catch (err) {
+          console.warn("[TxStats] (Blockscout) BigInt parse failed", err);
         }
-
-        const txCount = outgoingCount;
-        const activityDays = activeDays.size;
-        const gasSpentNative =
-          totalGasWei > 0n ? Number(totalGasWei) / 1e18 : 0;
-
-        console.log(
-          `[TxStats] (Blockscout) txCount=${txCount}, activityDays=${activityDays}, gasSpent=${gasSpentNative} ETH`
-        );
-
-        return { txCount, activityDays, gasSpentNative };
-      } else {
-        console.warn(
-          "[TxStats] (Blockscout) Empty result or bad status:",
-          json.status,
-          json.message
-        );
       }
     }
+
+    const gasSpentNative =
+      totalGasWei > 0n ? Number(totalGasWei / 1000000000000000000n) : 0;
+
+    console.log(
+      `[TxStats] (Blockscout) txCount=${outgoingCount}, activityDays=${activeDays.size}, gasSpent=${gasSpentNative} ETH`
+    );
+
+    return {
+      txCount: outgoingCount,
+      activityDays: activeDays.size,
+      gasSpentNative,
+    };
   } catch (err) {
     console.error("[TxStats] (Blockscout) error:", err);
+    return defaults;
   }
-
-  // ---------- 3) Fallback: Moralis stats (без газа) ----------
-  if (MORALIS_API_KEY) {
-    try {
-      const url = new URL(
-        `https://deep-index.moralis.io/api/v2.2/wallets/${address}/stats`
-      );
-      url.searchParams.set("chain", "base");
-
-      console.log("[TxStats] (Moralis fallback) Fetching:", url.toString());
-
-      const res = await fetch(url.toString(), {
-        method: "GET",
-        headers: {
-          accept: "application/json",
-          "X-API-Key": MORALIS_API_KEY
-        }
-      });
-
-      if (!res.ok) {
-        const text = await res.text();
-        console.error(
-          "[TxStats] (Moralis fallback) HTTP error:",
-          res.status,
-          text.slice(0, 300)
-        );
-      } else {
-        const json = await res.json();
-        const txTotal = Number(json?.transactions?.total || 0);
-
-        const activityDays =
-          txTotal > 0 ? Math.min(Math.ceil(txTotal / 4), 365) : 0;
-
-        console.log(
-          `[TxStats] (Moralis fallback) txCount=${txTotal}, activityDays≈${activityDays}`
-        );
-
-        return {
-          txCount: txTotal,
-          activityDays,
-          gasSpentNative: 0
-        };
-      }
-    } catch (err) {
-      console.error("[TxStats] (Moralis fallback) error:", err);
-    }
-  }
-
-  console.warn("[TxStats] All providers failed, returning defaults");
-  return defaults;
 }
 
-// ----------------------------------------------------
-// NFT mints via Moralis (with spam filter)
-// ----------------------------------------------------
+// -----------------------------
+// Moralis: NFT mints with spam filter
+// -----------------------------
 async function fetchNftMintsFromMoralis(address) {
   const apiKey = MORALIS_API_KEY;
   if (!apiKey) {
@@ -326,8 +279,8 @@ async function fetchNftMintsFromMoralis(address) {
     const res = await fetch(url.toString(), {
       headers: {
         "X-API-Key": apiKey,
-        accept: "application/json"
-      }
+        accept: "application/json",
+      },
     });
 
     if (!res.ok) {
@@ -351,18 +304,16 @@ async function fetchNftMintsFromMoralis(address) {
     }
 
     cursor = data.cursor;
-    if (!cursor) {
-      break;
-    }
+    if (!cursor) break;
   }
 
   console.log(`✅ NFT mints (spam filtered) for ${address}: ${totalMints}`);
   return totalMints;
 }
 
-// ----------------------------------------------------
-// DeFi swaps & volume via Moralis
-// ----------------------------------------------------
+// -----------------------------
+// Moralis: DeFi swaps & volume
+// -----------------------------
 async function fetchDefiSwapsFromMoralis(address) {
   if (!MORALIS_API_KEY) {
     return { swapsCount: 0, swapsVolumeUsd: 0 };
@@ -387,12 +338,12 @@ async function fetchDefiSwapsFromMoralis(address) {
 
       console.log("[DeFiSwaps] (Moralis) Fetching:", url.toString());
 
-      const res = await fetch(url.toString(), {
+      const res = await fetch(url, {
         method: "GET",
         headers: {
           accept: "application/json",
-          "X-API-Key": MORALIS_API_KEY
-        }
+          "X-API-Key": MORALIS_API_KEY,
+        },
       });
 
       if (!res.ok) {
@@ -429,17 +380,20 @@ async function fetchDefiSwapsFromMoralis(address) {
   return { swapsCount, swapsVolumeUsd };
 }
 
-// ----------------------------------------------------
-// DeFi Liquidity / Yield via Moralis (v0)
-// ----------------------------------------------------
+// -----------------------------
+// Moralis: DeFi Liquidity / Yield summary (v0)
+// -----------------------------
 async function fetchLiquidityYieldFromMoralis(address) {
   const apiKey = MORALIS_API_KEY;
   if (!apiKey) {
-    console.warn("⚠️ MORALIS_API_KEY is missing, returning liquidityYieldRaw = 0");
+    console.warn(
+      "⚠️ MORALIS_API_KEY is missing, returning liquidityYieldRaw = 0"
+    );
     return 0;
   }
 
   const baseUrl = `https://deep-index.moralis.io/api/v2.2/wallets/${address}/defi/summary`;
+
   const url = new URL(baseUrl);
   url.searchParams.set("chain", "base");
 
@@ -449,8 +403,8 @@ async function fetchLiquidityYieldFromMoralis(address) {
     method: "GET",
     headers: {
       accept: "application/json",
-      "X-API-Key": apiKey
-    }
+      "X-API-Key": apiKey,
+    },
   });
 
   if (!res.ok) {
@@ -477,9 +431,9 @@ async function fetchLiquidityYieldFromMoralis(address) {
   return safeTotal;
 }
 
-// ----------------------------------------------------
-// Tier mapping
-// ----------------------------------------------------
+// -----------------------------
+// Tier mapping helpers
+// -----------------------------
 function clampTier(t) {
   if (!Number.isFinite(t)) return 0;
   return Math.min(5, Math.max(0, Math.round(t)));
@@ -568,9 +522,9 @@ function mapSocialScoreToTier(score) {
   return 0;
 }
 
-// ----------------------------------------------------
+// -----------------------------
 // Label helpers
-// ----------------------------------------------------
+// -----------------------------
 function labelActivityDays(tier) {
   switch (tier) {
     case 0:
@@ -761,9 +715,19 @@ function labelOverallTier(tier) {
   }
 }
 
-// ----------------------------------------------------
+// Рарити для визуального вида
+function computeRarityFromOverallTier(overallTier) {
+  if (overallTier >= 5) return "Mythic";
+  if (overallTier >= 4) return "Legendary";
+  if (overallTier >= 3) return "Epic";
+  if (overallTier >= 2) return "Rare";
+  if (overallTier >= 1) return "Uncommon";
+  return "Common";
+}
+
+// -----------------------------
 // Overall tier / score
-// ----------------------------------------------------
+// -----------------------------
 function computeOverallTier(tiers) {
   const values = Object.values(tiers).map((t) => Number(t || 0));
   if (!values.length) return 0;
@@ -779,22 +743,13 @@ function computeOverallScore(tiers) {
   return Math.round((sum / max) * 100);
 }
 
-// ----------------------------------------------------
-// Beast preview
-// ----------------------------------------------------
+// -----------------------------
+// Beast preview builder
+// -----------------------------
 function computeUserType(builderTier, socialTier) {
   if (builderTier >= 4) return "Builder";
   if (socialTier >= 4) return "Influencer";
   return "User";
-}
-
-function computeRarityFromOverallTier(overallTier) {
-  if (overallTier >= 5) return "Mythic";
-  if (overallTier >= 4) return "Legendary";
-  if (overallTier >= 3) return "Epic";
-  if (overallTier >= 2) return "Rare";
-  if (overallTier >= 1) return "Uncommon";
-  return "Common";
 }
 
 function buildBeastPreview(basePreview, tiers) {
@@ -802,7 +757,7 @@ function buildBeastPreview(basePreview, tiers) {
     species_id: basePreview?.species_id ?? 1,
     rarity: computeRarityFromOverallTier(tiers.overall || 0),
     user_type: computeUserType(tiers.builder || 0, tiers.social || 0),
-    visual_traits: {}
+    visual_traits: {},
   };
 
   const visual = basePreview?.visual_traits || {};
@@ -813,7 +768,7 @@ function buildBeastPreview(basePreview, tiers) {
     label: labelActivityDays(tiers.activity_days || 0),
     description:
       visual.size?.description ||
-      "Activity level over time in the Base network."
+      "Activity level over time in the Base network.",
   };
 
   preview.visual_traits.muscles = {
@@ -822,7 +777,7 @@ function buildBeastPreview(basePreview, tiers) {
     label: labelTxCount(tiers.tx_count || 0),
     description:
       visual.muscles?.description ||
-      "How many transactions this Beast has pushed onchain."
+      "How many transactions this Beast has pushed onchain.",
   };
 
   preview.visual_traits.weapon = {
@@ -830,7 +785,7 @@ function buildBeastPreview(basePreview, tiers) {
     tier: tiers.defi_swaps || 0,
     label: labelDefiSwaps(tiers.defi_swaps || 0),
     description:
-      visual.weapon?.description || "DeFi activity through swaps and trades."
+      visual.weapon?.description || "DeFi activity through swaps and trades.",
   };
 
   preview.visual_traits.shield = {
@@ -839,7 +794,7 @@ function buildBeastPreview(basePreview, tiers) {
     label: labelLiquidityYield(tiers.liquidity_yield || 0),
     description:
       visual.shield?.description ||
-      "Strength of LP, lending and staking positions."
+      "Strength of LP, lending and staking positions.",
   };
 
   preview.visual_traits.armor = {
@@ -848,7 +803,7 @@ function buildBeastPreview(basePreview, tiers) {
     label: labelBuilder(tiers.builder || 0),
     description:
       visual.armor?.description ||
-      "Builder reputation in the Base ecosystem."
+      "Builder reputation in the Base ecosystem.",
   };
 
   preview.visual_traits.neck_medallion = {
@@ -856,8 +811,7 @@ function buildBeastPreview(basePreview, tiers) {
     tier: tiers.nft_mints || 0,
     label: labelNftMints(tiers.nft_mints || 0),
     description:
-      visual.neck_medallion?.description ||
-      "NFT minting history on Base."
+      visual.neck_medallion?.description || "NFT minting history on Base.",
   };
 
   preview.visual_traits.helmet = {
@@ -865,8 +819,7 @@ function buildBeastPreview(basePreview, tiers) {
     tier: tiers.social || 0,
     label: labelSocial(tiers.social || 0),
     description:
-      visual.helmet?.description ||
-      "Offchain & onchain social influence."
+      visual.helmet?.description || "Offchain & onchain social influence.",
   };
 
   preview.visual_traits.ring = {
@@ -875,7 +828,7 @@ function buildBeastPreview(basePreview, tiers) {
     label: labelGasSpent(tiers.gas_spent || 0),
     description:
       visual.ring?.description ||
-      "Ring forged from the gas this Beast has burned on Base."
+      "Ring forged from the gas this Beast has burned on Base.",
   };
 
   preview.visual_traits.boots = {
@@ -884,15 +837,76 @@ function buildBeastPreview(basePreview, tiers) {
     label: labelDefiVolume(tiers.defi_volume || 0),
     description:
       visual.boots?.description ||
-      "Boots that reflect how much DeFi ground this Beast has covered on Base."
+      "Boots that reflect how much DeFi ground this Beast has covered on Base.",
   };
 
   return preview;
 }
 
-// ----------------------------------------------------
+// -----------------------------
+// Onchain score helpers for metadata
+// -----------------------------
+function parseBeastScoreTuple(raw) {
+  if (!raw) {
+    return {
+      activityDaysTier: 0,
+      txCountTier: 0,
+      defiSwapsTier: 0,
+      liquidityTier: 0,
+      builderTier: 0,
+      nftMintsTier: 0,
+      socialTier: 0,
+      gasSpentTier: 0,
+      defiVolumeTier: 0,
+      overallTier: 0,
+    };
+  }
+
+  return {
+    activityDaysTier: Number(raw.activityDaysTier ?? raw[0] ?? 0),
+    txCountTier: Number(raw.txCountTier ?? raw[1] ?? 0),
+    defiSwapsTier: Number(raw.defiSwapsTier ?? raw[2] ?? 0),
+    liquidityTier: Number(raw.liquidityTier ?? raw[3] ?? 0),
+    builderTier: Number(raw.builderTier ?? raw[4] ?? 0),
+    nftMintsTier: Number(raw.nftMintsTier ?? raw[5] ?? 0),
+    socialTier: Number(raw.socialTier ?? raw[6] ?? 0),
+    gasSpentTier: Number(raw.gasSpentTier ?? raw[7] ?? 0),
+    defiVolumeTier: Number(raw.defiVolumeTier ?? raw[8] ?? 0),
+    overallTier: Number(raw.overallTier ?? raw[9] ?? 0),
+  };
+}
+
+async function fetchOnchainBeastScoreForToken(tokenId) {
+  if (!rpcProvider || !BEAST_NFT_ADDRESS || !BEAST_REGISTRY_ADDRESS) {
+    throw new Error("Onchain config missing (RPC_URL / BEAST_*_ADDRESS)");
+  }
+
+  const nft = new ethers.Contract(
+    BEAST_NFT_ADDRESS,
+    BEAST_NFT_ABI,
+    rpcProvider
+  );
+  const registry = new ethers.Contract(
+    BEAST_REGISTRY_ADDRESS,
+    BEAST_REGISTRY_ABI,
+    rpcProvider
+  );
+
+  const owner = await nft.ownerOf(tokenId);
+  const rawScore = await registry.getScore(owner);
+  const score = parseBeastScoreTuple(rawScore);
+
+  console.log(
+    `[metadata] tokenId=${tokenId}, owner=${owner}, score=`,
+    score
+  );
+
+  return { owner, score };
+}
+
+// -----------------------------
 // Routes
-// ----------------------------------------------------
+// -----------------------------
 app.get("/", (_req, res) => {
   res.json({ ok: true, name: "Base Beast backend", version: "0.18" });
 });
@@ -909,15 +923,7 @@ app.get("/api/wallet/:address/score", async (req, res) => {
     const baseProfile = await loadJsonFromMocks("wallet_profile_example.json");
     const data = JSON.parse(JSON.stringify(baseProfile));
 
-    const lowerAddr = address.toLowerCase();
-    const manual = MANUAL_SCORES[lowerAddr] || {};
-    if (manual.builder_score != null || manual.social_score != null) {
-      console.log(
-        `[ManualScores] Overrides for ${lowerAddr}:`,
-        JSON.stringify(manual)
-      );
-    }
-
+    // 1) Onchain metrics
     const { txCount, activityDays, gasSpentNative } = await fetchTxStats(
       address
     );
@@ -927,14 +933,31 @@ app.get("/api/wallet/:address/score", async (req, res) => {
     );
     const liquidityYieldRaw = await fetchLiquidityYieldFromMoralis(address);
 
-    // manual builder / social имеют приоритет над моковыми raw_value
-    const builderScoreRaw =
-      manual.builder_score ??
-      Number(data.scores.metrics.builder.raw_value || 0);
-    const socialScoreRaw =
-      manual.social_score ??
-      Number(data.scores.metrics.social.raw_value || 0);
+    // 2) Manual overrides for builder / social
+    let builderScoreRaw = Number(
+      data.scores.metrics.builder.raw_value || 0
+    );
+    let socialScoreRaw = Number(
+      data.scores.metrics.social.raw_value || 0
+    );
 
+    const overrides = {};
+    if (Number.isFinite(MANUAL_BUILDER_SCORE_RAW)) {
+      builderScoreRaw = MANUAL_BUILDER_SCORE_RAW;
+      overrides.builder_score = MANUAL_BUILDER_SCORE_RAW;
+    }
+    if (Number.isFinite(MANUAL_SOCIAL_SCORE_RAW)) {
+      socialScoreRaw = MANUAL_SOCIAL_SCORE_RAW;
+      overrides.social_score = MANUAL_SOCIAL_SCORE_RAW;
+    }
+    if (Object.keys(overrides).length > 0) {
+      console.log(
+        `[ManualScores] Overrides for ${address.toLowerCase()}:`,
+        JSON.stringify(overrides)
+      );
+    }
+
+    // 3) Mapping raw → tiers
     const activityTier = mapActivityDaysToTier(activityDays);
     const txTier = mapTxCountToTier(txCount);
     const defiSwapsTier = mapDefiSwapsToTier(swapsCount);
@@ -954,11 +977,12 @@ app.get("/api/wallet/:address/score", async (req, res) => {
       nft_mints: nftMintsTier,
       social: socialTier,
       gas_spent: gasSpentTier,
-      defi_volume: defiVolumeTier
+      defi_volume: defiVolumeTier,
     };
 
     data.scores.tiers = tiers;
 
+    // 4) metrics.*
     const metrics = data.scores.metrics;
 
     metrics.activity_days.raw_value = activityDays;
@@ -997,6 +1021,7 @@ app.get("/api/wallet/:address/score", async (req, res) => {
     metrics.social.tier = socialTier;
     metrics.social.tier_label = labelSocial(socialTier);
 
+    // 5) Overall
     const overallTier = computeOverallTier(tiers);
     const overallLabel = labelOverallTier(overallTier);
     const overallScore = computeOverallScore(tiers);
@@ -1009,9 +1034,10 @@ app.get("/api/wallet/:address/score", async (req, res) => {
     data.network = "base-mainnet";
     data.updated_at = new Date().toISOString();
 
+    // 6) Beast preview
     data.beast_preview = buildBeastPreview(baseProfile.beast_preview, {
       ...tiers,
-      overall: overallTier
+      overall: overallTier,
     });
 
     res.json(data);
@@ -1021,14 +1047,110 @@ app.get("/api/wallet/:address/score", async (req, res) => {
   }
 });
 
-// Static metadata (пока мок)
+// Dynamic NFT metadata endpoint (onchain-aware)
 app.get("/api/beast/:tokenId/metadata", async (req, res) => {
+  const tokenIdStr = req.params.tokenId;
+  const tokenId = Number(tokenIdStr);
+
+  if (!Number.isInteger(tokenId) || tokenId < 0) {
+    return res.status(400).json({ error: "Invalid tokenId" });
+  }
+
   try {
-    const metadata = await loadJsonFromMocks("beast_0_metadata.json");
+    const baseMetadata = await loadJsonFromMocks("beast_0_metadata.json");
+
+    if (!rpcProvider || !BEAST_NFT_ADDRESS || !BEAST_REGISTRY_ADDRESS) {
+      console.warn(
+        "[/api/beast/:tokenId/metadata] Onchain config missing, returning static mock"
+      );
+      return res.json({
+        ...baseMetadata,
+        name: `Base Beast #${tokenId}`,
+      });
+    }
+
+    const { owner, score } = await fetchOnchainBeastScoreForToken(tokenId);
+
+    const rarity = computeRarityFromOverallTier(score.overallTier);
+    const userType = computeUserType(score.builderTier, score.socialTier);
+
+    const attributes = [
+      { trait_type: "Species", value: "Proto Beast" },
+      { trait_type: "Rarity", value: rarity },
+      { trait_type: "User Type", value: userType },
+
+      {
+        display_type: "number",
+        trait_type: "Activity Days Tier",
+        value: score.activityDaysTier,
+      },
+      {
+        display_type: "number",
+        trait_type: "Tx Count Tier",
+        value: score.txCountTier,
+      },
+      {
+        display_type: "number",
+        trait_type: "DeFi Swaps Tier",
+        value: score.defiSwapsTier,
+      },
+      {
+        display_type: "number",
+        trait_type: "Liquidity & Yield Tier",
+        value: score.liquidityTier,
+      },
+      {
+        display_type: "number",
+        trait_type: "Builder Tier",
+        value: score.builderTier,
+      },
+      {
+        display_type: "number",
+        trait_type: "NFT Mints Tier",
+        value: score.nftMintsTier,
+      },
+      {
+        display_type: "number",
+        trait_type: "Social Tier",
+        value: score.socialTier,
+      },
+      {
+        display_type: "number",
+        trait_type: "Gas Spent Tier",
+        value: score.gasSpentTier,
+      },
+      {
+        display_type: "number",
+        trait_type: "DeFi Volume Tier",
+        value: score.defiVolumeTier,
+      },
+      {
+        trait_type: "Owner",
+        value: owner,
+      },
+    ];
+
+    const metadata = {
+      ...baseMetadata,
+      name: `Base Beast #${tokenId}`,
+      attributes,
+    };
+
     res.json(metadata);
   } catch (err) {
     console.error("[/api/beast/:tokenId/metadata] error:", err);
-    res.status(500).json({ error: "Failed to load metadata" });
+
+    const msg = String(err.message || "").toLowerCase();
+    if (
+      msg.includes("nonexistent token") ||
+      msg.includes("owner query for nonexistent token")
+    ) {
+      return res
+        .status(404)
+        .json({ error: "Beast not found for this tokenId" });
+    }
+
+    res.status(500).json({ error: "Failed to build Beast metadata" });
   }
 });
 

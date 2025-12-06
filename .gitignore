@@ -20,3 +20,5 @@
 /coverage
 .env
 base-playground/
+frontend/node_modules/
+frontend/dist/
