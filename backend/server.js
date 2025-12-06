@@ -141,10 +141,9 @@ async function fetchTxStats(address) {
             }
           }
 
+          // ВАЖНО: не делим BigInt на 1e18, а конвертим в Number и делим
           const gasSpentNative =
-            totalGasWei > 0n
-              ? Number(totalGasWei / 1000000000000000000n)
-              : 0;
+            totalGasWei > 0n ? Number(totalGasWei) / 1e18 : 0;
 
           return {
             txCount: outgoingCount,
@@ -225,7 +224,7 @@ async function fetchTxStats(address) {
     }
 
     const gasSpentNative =
-      totalGasWei > 0n ? Number(totalGasWei / 1000000000000000000n) : 0;
+      totalGasWei > 0n ? Number(totalGasWei) / 1e18 : 0;
 
     console.log(
       `[TxStats] (Blockscout) txCount=${outgoingCount}, activityDays=${activeDays.size}, gasSpent=${gasSpentNative} ETH`
@@ -243,7 +242,7 @@ async function fetchTxStats(address) {
 }
 
 // -----------------------------
-// Moralis: NFT mints with spam filter
+// Moralis: NFT mints with spam filter (unique tokens)
 // -----------------------------
 async function fetchNftMintsFromMoralis(address) {
   const apiKey = MORALIS_API_KEY;
@@ -257,15 +256,18 @@ async function fetchNftMintsFromMoralis(address) {
   const limit = 100;
 
   let cursor = null;
-  let totalMints = 0;
   const lowerAddr = address.toLowerCase();
   const zeroAddress = "0x0000000000000000000000000000000000000000";
+
+  // Сет для уникальных токенов (адрес контракта + token_id)
+  const mintedTokens = new Set();
 
   for (let page = 0; page < maxPages; page++) {
     const url = new URL(baseUrl);
     url.searchParams.set("chain", "base");
     url.searchParams.set("limit", String(limit));
     url.searchParams.set("order", "DESC");
+    // Просим Moralis отфильтровать спамовые коллекции
     url.searchParams.set("exclude_spam", "true");
 
     if (cursor) {
@@ -295,11 +297,26 @@ async function fetchNftMintsFromMoralis(address) {
     const transfers = Array.isArray(data.result) ? data.result : [];
 
     for (const tx of transfers) {
-      const from = (tx.from_address || "").toLowerCase();
-      const to = (tx.to_address || "").toLowerCase();
+      const from = (tx.from_address || tx.fromAddress || "").toLowerCase();
+      const to = (tx.to_address || tx.toAddress || "").toLowerCase();
+      const possibleSpam =
+        tx.possible_spam === true || tx.possible_spam === "true";
 
+      // Доп. защита от спама на уровне конкретного трансфера
+      if (possibleSpam) continue;
+
+      // Минты: from == zeroAddress, to == наш адрес
       if (from === zeroAddress && to === lowerAddr) {
-        totalMints += 1;
+        const tokenAddress = (
+          tx.token_address ||
+          tx.tokenAddress ||
+          ""
+        ).toLowerCase();
+        const tokenId = String(tx.token_id || tx.tokenId || "");
+
+        if (tokenAddress && tokenId) {
+          mintedTokens.add(`${tokenAddress}:${tokenId}`);
+        }
       }
     }
 
@@ -307,7 +324,10 @@ async function fetchNftMintsFromMoralis(address) {
     if (!cursor) break;
   }
 
-  console.log(`✅ NFT mints (spam filtered) for ${address}: ${totalMints}`);
+  const totalMints = mintedTokens.size;
+  console.log(
+    `✅ NFT mints (spam filtered, unique tokens) for ${address}: ${totalMints}`
+  );
   return totalMints;
 }
 
@@ -1151,6 +1171,174 @@ app.get("/api/beast/:tokenId/metadata", async (req, res) => {
     }
 
     res.status(500).json({ error: "Failed to build Beast metadata" });
+  }
+});
+
+// --- Push live Beast score onchain into BeastScoreRegistry ---
+app.post("/api/wallet/:address/push-onchain", async (req, res) => {
+  try {
+    const userAddress = req.params.address;
+
+    // 1. Валидация адреса
+    if (!ethers.isAddress(userAddress)) {
+      return res.status(400).json({ error: "Invalid wallet address" });
+    }
+
+    // 2. Тянем live-скор с нашего же backend-а
+    const backendBaseUrl =
+      process.env.BEAST_BACKEND_URL || "http://localhost:4000";
+
+    const scoreResp = await fetch(
+      `${backendBaseUrl.replace(/\/$/, "")}/api/wallet/${userAddress}/score`
+    );
+
+    if (!scoreResp.ok) {
+      const text = await scoreResp.text();
+      return res.status(500).json({
+        error: `Failed to fetch live score: ${scoreResp.status} ${text.slice(
+          0,
+          200
+        )}`,
+      });
+    }
+
+    const scoreJson = await scoreResp.json();
+
+    const metrics = scoreJson?.scores?.metrics || {};
+    const overallTier = scoreJson?.scores?.overall?.tier ?? 0;
+
+    // 3. Собираем BeastScore struct из метрик (tiers)
+    const beastScoreStruct = {
+      activityDaysTier: metrics.activity_days?.tier ?? 0,
+      txCountTier: metrics.tx_count?.tier ?? 0,
+      defiSwapsTier: metrics.defi_swaps?.tier ?? 0,
+      liquidityTier: metrics.liquidity_yield?.tier ?? 0,
+      builderTier: metrics.builder?.tier ?? 0,
+      nftMintsTier: metrics.nft_mints?.tier ?? 0,
+      socialTier: metrics.social?.tier ?? 0,
+      gasSpentTier: metrics.gas_spent?.tier ?? 0,
+      defiVolumeTier: metrics.defi_volume?.tier ?? 0,
+      overallTier,
+    };
+
+    // 4. Проверяем env для ончейн-записи
+    const rpcUrl = process.env.BASE_RPC_URL;
+    const privateKey = process.env.SCORE_ORACLE_PRIVATE_KEY;
+    const registryAddress = process.env.BEAST_REGISTRY_ADDRESS;
+
+    if (!rpcUrl || !privateKey || !registryAddress) {
+      return res.status(500).json({
+        error:
+          "Missing BASE_RPC_URL, SCORE_ORACLE_PRIVATE_KEY or BEAST_REGISTRY_ADDRESS in .env",
+      });
+    }
+
+    // 5. Подключаемся к Base и к реестру как оракул
+    const provider = new ethers.JsonRpcProvider(rpcUrl);
+    const wallet = new ethers.Wallet(privateKey, provider);
+
+    const registryAbi = [
+      "function setScore(address user, tuple(uint8 activityDaysTier,uint8 txCountTier,uint8 defiSwapsTier,uint8 liquidityTier,uint8 builderTier,uint8 nftMintsTier,uint8 socialTier,uint8 gasSpentTier,uint8 defiVolumeTier,uint8 overallTier) score) external",
+    ];
+
+    const registry = new ethers.Contract(registryAddress, registryAbi, wallet);
+
+    // 6. Отправляем транзакцию setScore
+    const tx = await registry.setScore(userAddress, beastScoreStruct);
+    const receipt = await tx.wait();
+
+    return res.json({
+      ok: true,
+      txHash: tx.hash,
+      blockNumber: receipt.blockNumber,
+      score: beastScoreStruct,
+    });
+  } catch (err) {
+    console.error("push-onchain error:", err);
+    return res.status(500).json({
+      error: err.message || "Internal server error while pushing onchain",
+    });
+  }
+});
+
+// --- Detect Beast NFT for wallet (by address) ---
+app.get("/api/wallet/:address/beast-nft", async (req, res) => {
+  try {
+    const userAddress = req.params.address;
+
+    if (!ethers.isAddress(userAddress)) {
+      return res.status(400).json({ error: "Invalid wallet address" });
+    }
+
+    const nftAddress = (process.env.BEAST_NFT_ADDRESS ||
+      "0x80145474Ad3050ec9445D80BF5bfD06612daE4F6").toLowerCase();
+
+    const moralisApiKey = process.env.MORALIS_API_KEY;
+    if (!moralisApiKey) {
+      return res.status(500).json({
+        error: "Missing MORALIS_API_KEY in .env",
+      });
+    }
+
+    const url = `https://deep-index.moralis.io/api/v2.2/${userAddress}/nft?chain=base&token_addresses=${nftAddress}`;
+
+    const resp = await fetch(url, {
+      headers: {
+        "X-API-Key": moralisApiKey,
+        accept: "application/json",
+      },
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text();
+      return res.status(500).json({
+        error: `Moralis error ${resp.status}: ${text.slice(0, 200)}`,
+      });
+    }
+
+    const json = await resp.json();
+    const results = json.result || json.nfts || [];
+
+    if (!Array.isArray(results) || results.length === 0) {
+      // У адреса нет Base Beast NFT
+      return res.json({
+        hasBeast: false,
+        contract: nftAddress,
+        owner: userAddress,
+        nfts: [],
+      });
+    }
+
+    // Берём первый найденный NFT
+    const first = results[0];
+
+    const tokenIdRaw = first.token_id || first.tokenId;
+    const tokenId =
+      typeof tokenIdRaw === "string"
+        ? tokenIdRaw
+        : String(tokenIdRaw ?? "");
+
+    if (!tokenId) {
+      return res.json({
+        hasBeast: false,
+        contract: nftAddress,
+        owner: userAddress,
+        nfts: [],
+      });
+    }
+
+    return res.json({
+      hasBeast: true,
+      contract: nftAddress,
+      owner: userAddress,
+      tokenId,
+      nft: first,
+    });
+  } catch (err) {
+    console.error("beast-nft error:", err);
+    return res.status(500).json({
+      error: err.message || "Failed to detect Beast NFT.",
+    });
   }
 });
 

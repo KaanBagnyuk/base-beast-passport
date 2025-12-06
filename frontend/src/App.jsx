@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ethers } from "ethers";
+import visualConfig from "./config/beast_visual_config.json";
 
 // --- Config (backend + contracts) ---
 
@@ -36,7 +37,7 @@ function App() {
   const [profile, setProfile] = useState(null);
   const [error, setError] = useState("");
 
-  // onchain / mint state
+  // onchain / registry state
   const [onchainScore, setOnchainScore] = useState(null);
   const [loadingOnchain, setLoadingOnchain] = useState(false);
 
@@ -44,11 +45,32 @@ function App() {
   const [mintError, setMintError] = useState("");
   const [mintTx, setMintTx] = useState(null);
 
+  // push-onchain state
+  const [pushingOnchain, setPushingOnchain] = useState(false);
+  const [pushError, setPushError] = useState("");
+  const [pushResult, setPushResult] = useState(null);
+
+  // Beast NFT snapshot state
+  const [beastNftInfo, setBeastNftInfo] = useState(null);
+  const [beastMetadata, setBeastMetadata] = useState(null);
+  const [loadingBeastMeta, setLoadingBeastMeta] = useState(false);
+  const [beastMetaError, setBeastMetaError] = useState("");
+
+  const visualConfigMap = visualConfig || {};
+
   // --- Backend: load Beast profile ---
 
   const handleLoadProfile = async () => {
     setError("");
     setProfile(null);
+    setOnchainScore(null);
+    setMintError("");
+    setMintTx(null);
+    setPushError("");
+    setPushResult(null);
+    setBeastNftInfo(null);
+    setBeastMetadata(null);
+    setBeastMetaError("");
 
     const addr = address.trim();
     if (!addr) {
@@ -217,6 +239,91 @@ function App() {
     }
   };
 
+  // --- Backend: push live score onchain via oracle ---
+
+  const handlePushOnchain = async () => {
+    setPushError("");
+    setPushResult(null);
+
+    const addr = address.trim();
+    if (!addr) {
+      setPushError("Address is empty.");
+      return;
+    }
+
+    try {
+      setPushingOnchain(true);
+
+      const res = await fetch(
+        `${BACKEND_URL.replace(/\/$/, "")}/api/wallet/${addr}/push-onchain`,
+        { method: "POST" }
+      );
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Backend error ${res.status}: ${text.slice(0, 200)}`);
+      }
+
+      const json = await res.json();
+      setPushResult(json);
+    } catch (err) {
+      console.error(err);
+      setPushError(err.message || "Failed to push score onchain.");
+    } finally {
+      setPushingOnchain(false);
+    }
+  };
+
+  // --- Backend: auto-detect Beast NFT + load metadata ---
+
+  const handleLoadBeastSnapshot = async () => {
+    setBeastMetaError("");
+    setBeastNftInfo(null);
+    setBeastMetadata(null);
+
+    const addr = address.trim();
+    if (!addr) {
+      setBeastMetaError("Address is empty.");
+      return;
+    }
+
+    try {
+      setLoadingBeastMeta(true);
+      const base = BACKEND_URL.replace(/\/$/, "");
+
+      // 1) detect Beast NFT for this wallet
+      const nftRes = await fetch(`${base}/api/wallet/${addr}/beast-nft`);
+      if (!nftRes.ok) {
+        const text = await nftRes.text();
+        throw new Error(`Backend error ${nftRes.status}: ${text.slice(0, 200)}`);
+      }
+
+      const nftJson = await nftRes.json();
+      setBeastNftInfo(nftJson);
+
+      if (!nftJson.hasBeast || !nftJson.tokenId) {
+        setBeastMetaError("This wallet has no Base Beast NFT yet.");
+        return;
+      }
+
+      // 2) load onchain snapshot metadata
+      const tokenId = nftJson.tokenId;
+      const metaRes = await fetch(`${base}/api/beast/${tokenId}/metadata`);
+      if (!metaRes.ok) {
+        const text = await metaRes.text();
+        throw new Error(`Metadata error ${metaRes.status}: ${text.slice(0, 200)}`);
+      }
+
+      const metaJson = await metaRes.json();
+      setBeastMetadata(metaJson);
+    } catch (err) {
+      console.error(err);
+      setBeastMetaError(err.message || "Failed to load Beast NFT snapshot.");
+    } finally {
+      setLoadingBeastMeta(false);
+    }
+  };
+
   // --- Derived data for render ---
 
   const overall = profile?.scores?.overall;
@@ -284,13 +391,14 @@ function App() {
           )}
         </section>
 
-        {/* Overview + Visual */}
+        {/* Live Overview + Visual */}
         {profile && (
           <section className="grid gap-4 md:grid-cols-[2fr,3fr]">
+            {/* Live Beast Overview */}
             <div className="bg-slate-900/70 border border-slate-800 rounded-xl p-4 flex flex-col gap-3">
               <div className="flex items-center justify-between gap-2">
                 <h2 className="text-sm font-semibold text-slate-200">
-                  Beast Overview
+                  Live Beast Overview
                 </h2>
                 <span className="text-[11px] text-slate-400">
                   Network: {profile.network}
@@ -341,11 +449,11 @@ function App() {
               </div>
             </div>
 
-            {/* Visual traits */}
+            {/* Visual traits (Live) */}
             <div className="bg-slate-900/70 border border-slate-800 rounded-xl p-4 flex flex-col gap-3">
               <div className="flex items-center justify-between gap-2">
                 <h2 className="text-sm font-semibold text-slate-200">
-                  Beast Visual Traits
+                  Beast Visual Traits (Live)
                 </h2>
                 <span className="text-[11px] text-slate-500">
                   Preview (text-only MVP)
@@ -353,41 +461,58 @@ function App() {
               </div>
 
               <div className="grid grid-cols-2 gap-2 text-xs">
-                {Object.entries(visual).map(([key, trait]) => (
-                  <div
-                    key={key}
-                    className="bg-slate-950/60 rounded-lg border border-slate-800 px-3 py-2 flex flex-col gap-1"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-semibold text-slate-200">
-                        {key}
-                      </span>
-                      <span className="text-[11px] text-slate-400">
-                        Tier {trait.tier ?? 0}/5
-                      </span>
+                {Object.entries(visual).map(([key, trait]) => {
+                  const cfg = visualConfigMap[key] || {};
+                  const displayName = cfg.display_name || key;
+                  const tierNum = trait.tier ?? 0;
+                  const tierKey = String(tierNum);
+                  const tierCfg =
+                    (cfg.tiers && cfg.tiers[tierKey]) || null;
+                  const iconKey = tierCfg?.icon_key;
+
+                  return (
+                    <div
+                      key={key}
+                      className="bg-slate-950/60 rounded-lg border border-slate-800 px-3 py-2 flex flex-col gap-1"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-slate-200">
+                          {displayName}
+                        </span>
+                        <span className="text-[11px] text-slate-400">
+                          Tier {tierNum}/5
+                        </span>
+                      </div>
+
+                      {iconKey && (
+                        <div className="text-[10px] text-slate-500">
+                          Visual ID: {iconKey}
+                        </div>
+                      )}
+
+                      <div className="text-[11px] text-sky-300">
+                        {trait.label}
+                      </div>
+                      <div className="text-[11px] text-slate-400">
+                        {trait.description}
+                      </div>
+                      <div className="text-[10px] text-slate-500 mt-1">
+                        Metric: {trait.source_metric}
+                      </div>
                     </div>
-                    <div className="text-[11px] text-sky-300">
-                      {trait.label}
-                    </div>
-                    <div className="text-[11px] text-slate-400">
-                      {trait.description}
-                    </div>
-                    <div className="text-[10px] text-slate-500 mt-1">
-                      Metric: {trait.source_metric}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </section>
         )}
 
-        {/* Metrics table */}
+        {/* Metrics table (Live) */}
         {profile && metricEntries.length > 0 && (
           <section className="bg-slate-900/70 border border-slate-800 rounded-xl p-4">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-semibold text-slate-200">
-                Metrics Breakdown
+                Metrics Breakdown (Live)
               </h2>
               <span className="text-[11px] text-slate-500">
                 All metrics in tiers 0–5
@@ -452,7 +577,7 @@ function App() {
           </section>
         )}
 
-        {/* Onchain registry + Mint section */}
+        {/* Onchain registry + Mint + Push */}
         {profile && (
           <section className="bg-slate-900/70 border border-slate-800 rounded-xl p-4 flex flex-col gap-3">
             <div className="flex items-center justify-between gap-2 mb-1">
@@ -468,10 +593,12 @@ function App() {
             <div className="flex flex-wrap gap-2 mb-1">
               <button
                 onClick={handleLoadOnchainScore}
-                disabled={loadingOnchain || minting}
+                disabled={loadingOnchain || minting || pushingOnchain}
                 className="px-3 py-2 rounded-lg border border-slate-700 text-xs hover:bg-slate-800 disabled:opacity-60"
               >
-                {loadingOnchain ? "Loading onchain score..." : "Load onchain score"}
+                {loadingOnchain
+                  ? "Loading onchain score..."
+                  : "Load onchain score"}
               </button>
               <button
                 onClick={handleMintBeast}
@@ -479,6 +606,15 @@ function App() {
                 className="px-4 py-2 rounded-lg bg-emerald-500 text-xs font-semibold hover:bg-emerald-400 disabled:opacity-60"
               >
                 {minting ? "Minting Beast..." : "Mint Beast NFT"}
+              </button>
+              <button
+                onClick={handlePushOnchain}
+                disabled={pushingOnchain}
+                className="px-4 py-2 rounded-lg bg-indigo-500 text-xs font-semibold hover:bg-indigo-400 disabled:opacity-60"
+              >
+                {pushingOnchain
+                  ? "Pushing live score..."
+                  : "Push live score onchain"}
               </button>
             </div>
 
@@ -522,9 +658,155 @@ function App() {
               </div>
             )}
 
-            {mintError && (
+            {pushResult && (
+              <div className="mt-2 text-[11px] text-indigo-300">
+                ✅ Live score pushed onchain.
+                <br />
+                Tx hash:{" "}
+                <a
+                  href={`https://basescan.org/tx/${pushResult.txHash}`}
+                  className="underline break-all"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {pushResult.txHash}
+                </a>
+                {pushResult.blockNumber && (
+                  <>
+                    <br />
+                    Included in block: {pushResult.blockNumber}
+                  </>
+                )}
+              </div>
+            )}
+
+            {(mintError || pushError) && (
               <div className="mt-2 text-[11px] text-red-400 bg-red-950/40 border border-red-800 rounded-md px-3 py-2">
-                {mintError}
+                {mintError || pushError}
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* Onchain Beast NFT snapshot */}
+        {profile && (
+          <section className="bg-slate-900/70 border border-slate-800 rounded-xl p-4 flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <h2 className="text-sm font-semibold text-slate-200">
+                Onchain Beast NFT snapshot
+              </h2>
+              <span className="text-[11px] text-slate-500">
+                /api/beast/:tokenId/metadata
+              </span>
+            </div>
+
+            <button
+              onClick={handleLoadBeastSnapshot}
+              disabled={loadingBeastMeta}
+              className="px-3 py-2 rounded-lg border border-slate-700 text-xs hover:bg-slate-800 disabled:opacity-60 w-fit"
+            >
+              {loadingBeastMeta
+                ? "Loading Beast NFT..."
+                : "Load Beast NFT snapshot"}
+            </button>
+
+            {beastNftInfo && (
+              <div className="text-[11px] text-slate-300 mt-1">
+                {beastNftInfo.hasBeast ? (
+                  <>
+                    <div className="text-slate-400 mb-1">
+                      Detected Beast NFT for this wallet:
+                    </div>
+                    <div>
+                      Contract:{" "}
+                      <span className="font-mono break-all">
+                        {beastNftInfo.contract}
+                      </span>
+                    </div>
+                    <div>
+                      Token ID:{" "}
+                      <span className="font-mono">
+                        {beastNftInfo.tokenId}
+                      </span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-slate-400">
+                    This wallet does not own a Base Beast NFT yet.
+                  </div>
+                )}
+              </div>
+            )}
+
+            {beastMetadata && (
+              <div className="mt-3 text-xs">
+                <div className="mb-2">
+                  <div className="text-sm font-semibold text-slate-100">
+                    {beastMetadata.name}
+                  </div>
+                  {beastMetadata.description && (
+                    <div className="text-[11px] text-slate-400 mt-1">
+                      {beastMetadata.description}
+                    </div>
+                  )}
+                </div>
+
+                {beastMetadata.external_url && (
+                  <div className="mb-2 text-[11px] text-slate-500">
+                    external_url:{" "}
+                    <a
+                      href={beastMetadata.external_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="underline"
+                    >
+                      {beastMetadata.external_url}
+                    </a>
+                  </div>
+                )}
+
+                <div className="mt-2">
+                  <div className="text-[11px] text-slate-400 mb-1">
+                    Attributes (snapshot)
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-[11px] border-collapse">
+                      <thead>
+                        <tr className="border-b border-slate-800">
+                          <th className="text-left px-2 py-1 text-slate-400 font-medium">
+                            trait
+                          </th>
+                          <th className="text-left px-2 py-1 text-slate-400 font-medium">
+                            value
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(beastMetadata.attributes || []).map(
+                          (attr, idx) => (
+                            <tr
+                              key={idx}
+                              className="border-b border-slate-800/70 hover:bg-slate-900/70"
+                            >
+                              <td className="px-2 py-1 text-slate-300">
+                                {attr.trait_type}
+                              </td>
+                              <td className="px-2 py-1 text-slate-100">
+                                {attr.value}
+                              </td>
+                            </tr>
+                          )
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {beastMetaError && (
+              <div className="mt-2 text-[11px] text-red-400 bg-red-950/40 border border-red-800 rounded-md px-3 py-2">
+                {beastMetaError}
               </div>
             )}
           </section>
@@ -536,7 +818,7 @@ function App() {
             <span className="text-sky-400 font-semibold">
               Load Beast Profile
             </span>{" "}
-            to see the Beast Score and traits.
+            to see the Beast Score, traits and onchain snapshot.
           </p>
         )}
       </main>

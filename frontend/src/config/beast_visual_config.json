@@ -1,0 +1,110 @@
+{
+  "size": {
+    "display_name": "Size",
+    "metric": "activity_days",
+    "tiers": {
+      "0": { "name": "Glitchling", "icon_key": "size_t0_glitchling" },
+      "1": { "name": "Wandering Sprite", "icon_key": "size_t1_wandering_sprite" },
+      "2": { "name": "Proto Beast", "icon_key": "size_t2_proto_beast" },
+      "3": { "name": "Seasoned Beast", "icon_key": "size_t3_seasoned_beast" },
+      "4": { "name": "Base Titan", "icon_key": "size_t4_base_titan" },
+      "5": { "name": "World-Eater", "icon_key": "size_t5_world_eater" }
+    }
+  },
+  "muscles": {
+    "display_name": "Muscles",
+    "metric": "tx_count",
+    "tiers": {
+      "0": { "name": "Paper Arms", "icon_key": "muscles_t0_paper_arms" },
+      "1": { "name": "Warmup Flex", "icon_key": "muscles_t1_warmup_flex" },
+      "2": { "name": "Onchain Lifter", "icon_key": "muscles_t2_onchain_lifter" },
+      "3": { "name": "Heavy Hitter", "icon_key": "muscles_t3_heavy_hitter" },
+      "4": { "name": "Gaslord", "icon_key": "muscles_t4_gaslord" },
+      "5": { "name": "Chainbreaker", "icon_key": "muscles_t5_chainbreaker" }
+    }
+  },
+  "weapon": {
+    "display_name": "Weapon",
+    "metric": "defi_swaps",
+    "tiers": {
+      "0": { "name": "No Weapon", "icon_key": "weapon_t0_none" },
+      "1": { "name": "Wooden Dagger", "icon_key": "weapon_t1_wooden_dagger" },
+      "2": { "name": "Steel Blade", "icon_key": "weapon_t2_steel_blade" },
+      "3": { "name": "Runic Greatsword", "icon_key": "weapon_t3_runic_greatsword" },
+      "4": { "name": "DeFi Scythe", "icon_key": "weapon_t4_defi_scythe" },
+      "5": { "name": "Singularity Cannon", "icon_key": "weapon_t5_singularity_cannon" }
+    }
+  },
+  "shield": {
+    "display_name": "Shield",
+    "metric": "liquidity_yield",
+    "tiers": {
+      "0": { "name": "No Shield", "icon_key": "shield_t0_none" },
+      "1": { "name": "Wooden Shield", "icon_key": "shield_t1_wooden_shield" },
+      "2": { "name": "Iron Bulwark", "icon_key": "shield_t2_iron_bulwark" },
+      "3": { "name": "Runed Aegis", "icon_key": "shield_t3_runed_aegis" },
+      "4": { "name": "Protocol Ward", "icon_key": "shield_t4_protocol_ward" },
+      "5": { "name": "Astral Fortress", "icon_key": "shield_t5_astral_fortress" }
+    }
+  },
+  "armor": {
+    "display_name": "Armor",
+    "metric": "builder",
+    "tiers": {
+      "0": { "name": "Plain Cloth", "icon_key": "armor_t0_plain_cloth" },
+      "1": { "name": "Tinkerer Vest", "icon_key": "armor_t1_tinkerer_vest" },
+      "2": { "name": "Builder Harness", "icon_key": "armor_t2_builder_harness" },
+      "3": { "name": "Architect Plate", "icon_key": "armor_t3_architect_plate" },
+      "4": { "name": "Protocol Armor", "icon_key": "armor_t4_protocol_armor" },
+      "5": { "name": "Godsmith Regalia", "icon_key": "armor_t5_godsmith_regalia" }
+    }
+  },
+  "neck_medallion": {
+    "display_name": "Neck Medallion",
+    "metric": "nft_mints",
+    "tiers": {
+      "0": { "name": "Empty Chain", "icon_key": "neck_t0_empty_chain" },
+      "1": { "name": "First Mint Charm", "icon_key": "neck_t1_first_mint_charm" },
+      "2": { "name": "Collector Emblem", "icon_key": "neck_t2_collector_emblem" },
+      "3": { "name": "Enthusiast Sigil", "icon_key": "neck_t3_enthusiast_sigil" },
+      "4": { "name": "DeGen Medallion", "icon_key": "neck_t4_degen_medallion" },
+      "5": { "name": "Whale Relic", "icon_key": "neck_t5_whale_relic" }
+    }
+  },
+  "helmet": {
+    "display_name": "Helmet",
+    "metric": "social",
+    "tiers": {
+      "0": { "name": "Silent Hood", "icon_key": "helmet_t0_silent_hood" },
+      "1": { "name": "Lurker Cap", "icon_key": "helmet_t1_lurker_cap" },
+      "2": { "name": "Speaker Helm", "icon_key": "helmet_t2_speaker_helm" },
+      "3": { "name": "Herald Crown", "icon_key": "helmet_t3_herald_crown" },
+      "4": { "name": "Influencer Halo", "icon_key": "helmet_t4_influencer_halo" },
+      "5": { "name": "Celebrity Circlet", "icon_key": "helmet_t5_celebrity_circlet" }
+    }
+  },
+  "ring": {
+    "display_name": "Ring",
+    "metric": "gas_spent",
+    "tiers": {
+      "0": { "name": "No Ring", "icon_key": "ring_t0_none" },
+      "1": { "name": "Faded Ring", "icon_key": "ring_t1_faded" },
+      "2": { "name": "Bronze Ring", "icon_key": "ring_t2_bronze" },
+      "3": { "name": "Silver Ring", "icon_key": "ring_t3_silver" },
+      "4": { "name": "Gold Ring", "icon_key": "ring_t4_gold" },
+      "5": { "name": "Mythic Ring", "icon_key": "ring_t5_mythic" }
+    }
+  },
+  "boots": {
+    "display_name": "Boots",
+    "metric": "defi_volume",
+    "tiers": {
+      "0": { "name": "Barefoot", "icon_key": "boots_t0_barefoot" },
+      "1": { "name": "Dusty Sandals", "icon_key": "boots_t1_dusty_sandals" },
+      "2": { "name": "Traveler Boots", "icon_key": "boots_t2_traveler" },
+      "3": { "name": "Explorer Boots", "icon_key": "boots_t3_explorer" },
+      "4": { "name": "Blazing Boots", "icon_key": "boots_t4_blazing" },
+      "5": { "name": "Warp Boots", "icon_key": "boots_t5_warp" }
+    }
+  }
+}
