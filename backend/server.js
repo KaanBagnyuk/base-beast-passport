@@ -1,7 +1,8 @@
 // backend/server.js
-// Base Beast backend – v0.18
+// Base Beast backend – v0.20
 // - All core metrics onchain-based (Blockscout + Moralis)
 // - Manual builder & social scores from .env
+// - KYC metric (Coinbase verification) via .env list
 // - Dynamic NFT metadata endpoint using onchain BeastScoreRegistry
 
 import express from "express";
@@ -40,6 +41,21 @@ const MANUAL_SOCIAL_SCORE_RAW =
     ? Number(process.env.MANUAL_SOCIAL_SCORE)
     : undefined;
 
+// Coinbase KYC – MVP через .env (список адресов, прошедших верификацию)
+// Поддерживаем оба варианта ключа:
+// - COINBASE_VERIFIED_ADDRESSES=0xabc...,0xdef...
+// - COINBASE_VERIFIED_WALLETS=0xabc...,0xdef...
+const COINBASE_VERIFIED_ENV =
+  process.env.COINBASE_VERIFIED_ADDRESSES ||
+  process.env.COINBASE_VERIFIED_WALLETS ||
+  "";
+
+const COINBASE_VERIFIED_SET = new Set(
+  COINBASE_VERIFIED_ENV.split(/[,\s]+/) // запятая, пробелы, переносы строк
+    .map((a) => a.trim().toLowerCase())
+    .filter(Boolean)
+);
+
 // Onchain provider + minimal ABIs
 let rpcProvider = null;
 if (RPC_URL) {
@@ -50,8 +66,10 @@ if (RPC_URL) {
   );
 }
 
+// ВАЖНО: тут уже 11 полей в BeastScore (10 метрик + overallTier),
+// включая coinbaseTier перед overallTier
 const BEAST_REGISTRY_ABI = [
-  "function getScore(address user) view returns (tuple(uint8 activityDaysTier,uint8 txCountTier,uint8 defiSwapsTier,uint8 liquidityTier,uint8 builderTier,uint8 nftMintsTier,uint8 socialTier,uint8 gasSpentTier,uint8 defiVolumeTier,uint8 overallTier))",
+  "function getScore(address user) view returns (tuple(uint8 activityDaysTier,uint8 txCountTier,uint8 defiSwapsTier,uint8 liquidityTier,uint8 builderTier,uint8 nftMintsTier,uint8 socialTier,uint8 gasSpentTier,uint8 defiVolumeTier,uint8 coinbaseTier,uint8 overallTier))",
 ];
 
 const BEAST_NFT_ABI = [
@@ -141,7 +159,6 @@ async function fetchTxStats(address) {
             }
           }
 
-          // ВАЖНО: не делим BigInt на 1e18, а конвертим в Number и делим
           const gasSpentNative =
             totalGasWei > 0n ? Number(totalGasWei) / 1e18 : 0;
 
@@ -259,7 +276,6 @@ async function fetchNftMintsFromMoralis(address) {
   const lowerAddr = address.toLowerCase();
   const zeroAddress = "0x0000000000000000000000000000000000000000";
 
-  // Сет для уникальных токенов (адрес контракта + token_id)
   const mintedTokens = new Set();
 
   for (let page = 0; page < maxPages; page++) {
@@ -267,7 +283,6 @@ async function fetchNftMintsFromMoralis(address) {
     url.searchParams.set("chain", "base");
     url.searchParams.set("limit", String(limit));
     url.searchParams.set("order", "DESC");
-    // Просим Moralis отфильтровать спамовые коллекции
     url.searchParams.set("exclude_spam", "true");
 
     if (cursor) {
@@ -302,10 +317,8 @@ async function fetchNftMintsFromMoralis(address) {
       const possibleSpam =
         tx.possible_spam === true || tx.possible_spam === "true";
 
-      // Доп. защита от спама на уровне конкретного трансфера
       if (possibleSpam) continue;
 
-      // Минты: from == zeroAddress, to == наш адрес
       if (from === zeroAddress && to === lowerAddr) {
         const tokenAddress = (
           tx.token_address ||
@@ -402,6 +415,8 @@ async function fetchDefiSwapsFromMoralis(address) {
 
 // -----------------------------
 // Moralis: DeFi Liquidity / Yield summary (v0)
+// Сейчас возвращает "моментальный" TVL (USD) + unclaimed rewards,
+// но тировая шкала уже заточена под будущий USD*DAYS агрегатор.
 // -----------------------------
 async function fetchLiquidityYieldFromMoralis(address) {
   const apiKey = MORALIS_API_KEY;
@@ -445,9 +460,11 @@ async function fetchLiquidityYieldFromMoralis(address) {
     (Number.isFinite(totalUnclaimed) ? totalUnclaimed : 0);
 
   console.log(
-    `✅ DeFi summary for ${address}: total_usd_value=${totalValue}, total_unclaimed_usd_value=${totalUnclaimed}, liquidityYieldRaw=${safeTotal}`
+    `✅ DeFi summary for ${address}: total_usd_value=${totalValue}, total_unclaimed_usd_value=${totalUnclaimed}, liquidityUsdDaysRaw=${safeTotal}`
   );
 
+  // Сейчас возвращаем просто текущий USD-объём,
+  // в будущем сюда встанет настоящий агрегатор USD*DAYS.
   return safeTotal;
 }
 
@@ -495,36 +512,44 @@ function mapNftMintsToTier(mints) {
   return 0;
 }
 
+// Новая реалистичная шкала под Base (ETH сожжено на газ)
 function mapGasSpentToTier(gasEth) {
-  if (gasEth >= 500) return 5;
-  if (gasEth >= 100) return 4;
-  if (gasEth >= 25) return 3;
-  if (gasEth >= 5) return 2;
-  if (gasEth > 0) return 1;
-  return 0;
+  if (!Number.isFinite(gasEth) || gasEth <= 0) return 0;
+
+  if (gasEth >= 0.016) return 5;
+  if (gasEth >= 0.008) return 4;
+  if (gasEth >= 0.002) return 3;
+  if (gasEth >= 0.001) return 2;
+  // >0 – 0.000999 ETH
+  return 1;
 }
 
+// Новая шкала DeFi volume (USD)
 function mapDefiVolumeToTier(volumeUsd) {
-  if (volumeUsd >= 250000) return 5;
-  if (volumeUsd >= 50000) return 4;
-  if (volumeUsd >= 10000) return 3;
-  if (volumeUsd >= 1000) return 2;
-  if (volumeUsd > 0) return 1;
-  return 0;
+  if (!Number.isFinite(volumeUsd) || volumeUsd <= 0) return 0;
+
+  if (volumeUsd >= 50000) return 5;
+  if (volumeUsd >= 10000) return 4;
+  if (volumeUsd >= 2000) return 3;
+  if (volumeUsd >= 500) return 2;
+  // >0 – 499.999
+  return 1;
 }
 
-function mapLiquidityYieldToTier(raw) {
+// Шкала для Liquidity & Yield в терминах USD*DAYS
+// (пока raw ≈ текущий USD TVL, но числа подобраны под будущий агрегатор)
+function mapLiquidityUsdDaysToTier(raw) {
+  if (!Number.isFinite(raw) || raw <= 0) return 0;
   if (raw >= 500000) return 5;
   if (raw >= 100000) return 4;
   if (raw >= 20000) return 3;
   if (raw >= 5000) return 2;
-  if (raw > 0) return 1;
-  return 0;
+  return 1;
 }
 
 function mapBuilderScoreToTier(score) {
   if (!Number.isFinite(score)) return 0;
-  if (score >= 90) return 5;
+  if (score >= 100) return 5;
   if (score >= 70) return 4;
   if (score >= 50) return 3;
   if (score >= 30) return 2;
@@ -540,6 +565,29 @@ function mapSocialScoreToTier(score) {
   if (score >= 30) return 2;
   if (score > 0) return 1;
   return 0;
+}
+
+// Coinbase KYC 0/1 → Tier
+function mapCoinbaseVerifiedToTier(isVerified) {
+  return isVerified ? 5 : 0;
+}
+
+// -----------------------------
+// KYC helper (MVP)
+// -----------------------------
+function isCoinbaseVerified(address) {
+  const lower = String(address || "").toLowerCase();
+  if (!lower) return false;
+
+  if (COINBASE_VERIFIED_SET.has(lower)) {
+    return true;
+  }
+
+  // TODO: в будущем можно добавить:
+  // - Guild (роль Coinbase Onchain Verified)
+  // - base.org /name API
+  // - др. ончейн/оффчейн провайдеры
+  return false;
 }
 
 // -----------------------------
@@ -716,6 +764,17 @@ function labelDefiVolume(tier) {
   }
 }
 
+function labelCoinbaseVerified(tier) {
+  switch (tier) {
+    case 0:
+      return "Unverified";
+    case 5:
+      return "Coinbase Onchain Verified";
+    default:
+      return "Unknown";
+  }
+}
+
 function labelOverallTier(tier) {
   switch (tier) {
     case 0:
@@ -759,7 +818,7 @@ function computeOverallScore(tiers) {
   const values = Object.values(tiers).map((t) => Number(t || 0));
   if (!values.length) return 0;
   const sum = values.reduce((a, b) => a + b, 0);
-  const max = 5 * values.length;
+  const max = 5 * values.length; // теперь 10 метрик → max = 50
   return Math.round((sum / max) * 100);
 }
 
@@ -767,6 +826,9 @@ function computeOverallScore(tiers) {
 // Beast preview builder
 // -----------------------------
 function computeUserType(builderTier, socialTier) {
+  if (!Number.isFinite(builderTier)) builderTier = 0;
+  if (!Number.isFinite(socialTier)) socialTier = 0;
+
   if (builderTier >= 4) return "Builder";
   if (socialTier >= 4) return "Influencer";
   return "User";
@@ -860,6 +922,16 @@ function buildBeastPreview(basePreview, tiers) {
       "Boots that reflect how much DeFi ground this Beast has covered on Base.",
   };
 
+  // 🔥 Новый визуальный слот: серьга = Coinbase KYC
+  preview.visual_traits.earring = {
+    source_metric: "coinbase_verified",
+    tier: tiers.coinbase_verified || 0,
+    label: labelCoinbaseVerified(tiers.coinbase_verified || 0),
+    description:
+      visual.earring?.description ||
+      "Earring that appears when this Beast is verified through Coinbase.",
+  };
+
   return preview;
 }
 
@@ -878,6 +950,7 @@ function parseBeastScoreTuple(raw) {
       socialTier: 0,
       gasSpentTier: 0,
       defiVolumeTier: 0,
+      coinbaseTier: 0,
       overallTier: 0,
     };
   }
@@ -892,29 +965,58 @@ function parseBeastScoreTuple(raw) {
     socialTier: Number(raw.socialTier ?? raw[6] ?? 0),
     gasSpentTier: Number(raw.gasSpentTier ?? raw[7] ?? 0),
     defiVolumeTier: Number(raw.defiVolumeTier ?? raw[8] ?? 0),
-    overallTier: Number(raw.overallTier ?? raw[9] ?? 0),
+    coinbaseTier: Number(raw.coinbaseTier ?? raw[9] ?? 0),
+    overallTier: Number(raw.overallTier ?? raw[10] ?? 0),
   };
 }
 
 async function fetchOnchainBeastScoreForToken(tokenId) {
-  if (!rpcProvider || !BEAST_NFT_ADDRESS || !BEAST_REGISTRY_ADDRESS) {
-    throw new Error("Onchain config missing (RPC_URL / BEAST_*_ADDRESS)");
+  if (!rpcProvider || !BEAST_NFT_ADDRESS) {
+    throw new Error("Onchain config missing (RPC_URL / BEAST_NFT_ADDRESS)");
   }
 
+  // 1) Узнаём владельца токена по NFT-контракту
   const nft = new ethers.Contract(
     BEAST_NFT_ADDRESS,
     BEAST_NFT_ABI,
     rpcProvider
   );
-  const registry = new ethers.Contract(
-    BEAST_REGISTRY_ADDRESS,
-    BEAST_REGISTRY_ABI,
-    rpcProvider
+  const owner = await nft.ownerOf(tokenId);
+
+  // 2) Тянем live-скор из нашего же backend'а
+  const backendBaseUrl =
+    process.env.BEAST_BACKEND_URL || `http://localhost:${PORT}`;
+
+  const resp = await fetch(
+    `${backendBaseUrl.replace(/\/$/, "")}/api/wallet/${owner}/score`
   );
 
-  const owner = await nft.ownerOf(tokenId);
-  const rawScore = await registry.getScore(owner);
-  const score = parseBeastScoreTuple(rawScore);
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(
+      `Failed to fetch live score for owner: ${resp.status} ${text.slice(
+        0,
+        200
+      )}`
+    );
+  }
+
+  const scoreJson = await resp.json();
+  const metrics = scoreJson?.scores?.metrics || {};
+
+  const score = {
+    activityDaysTier: metrics.activity_days?.tier ?? 0,
+    txCountTier: metrics.tx_count?.tier ?? 0,
+    defiSwapsTier: metrics.defi_swaps?.tier ?? 0,
+    liquidityTier: metrics.liquidity_yield?.tier ?? 0,
+    builderTier: metrics.builder?.tier ?? 0,
+    nftMintsTier: metrics.nft_mints?.tier ?? 0,
+    socialTier: metrics.social?.tier ?? 0,
+    gasSpentTier: metrics.gas_spent?.tier ?? 0,
+    defiVolumeTier: metrics.defi_volume?.tier ?? 0,
+    coinbaseTier: metrics.coinbase_verified?.tier ?? 0,
+    overallTier: scoreJson?.scores?.overall?.tier ?? 0,
+  };
 
   console.log(
     `[metadata] tokenId=${tokenId}, owner=${owner}, score=`,
@@ -928,7 +1030,7 @@ async function fetchOnchainBeastScoreForToken(tokenId) {
 // Routes
 // -----------------------------
 app.get("/", (_req, res) => {
-  res.json({ ok: true, name: "Base Beast backend", version: "0.18" });
+  res.json({ ok: true, name: "Base Beast backend", version: "0.20" });
 });
 
 // Main scoring endpoint
@@ -951,7 +1053,7 @@ app.get("/api/wallet/:address/score", async (req, res) => {
     const { swapsCount, swapsVolumeUsd } = await fetchDefiSwapsFromMoralis(
       address
     );
-    const liquidityYieldRaw = await fetchLiquidityYieldFromMoralis(address);
+    const liquidityUsdDaysRaw = await fetchLiquidityYieldFromMoralis(address);
 
     // 2) Manual overrides for builder / social
     let builderScoreRaw = Number(
@@ -977,6 +1079,10 @@ app.get("/api/wallet/:address/score", async (req, res) => {
       );
     }
 
+    // 2.1) Coinbase KYC (MVP: через .env список адресов)
+    const coinbaseVerified = isCoinbaseVerified(address);
+    const coinbaseTier = mapCoinbaseVerifiedToTier(coinbaseVerified);
+
     // 3) Mapping raw → tiers
     const activityTier = mapActivityDaysToTier(activityDays);
     const txTier = mapTxCountToTier(txCount);
@@ -984,7 +1090,7 @@ app.get("/api/wallet/:address/score", async (req, res) => {
     const nftMintsTier = mapNftMintsToTier(nftMintsRaw);
     const gasSpentTier = mapGasSpentToTier(gasSpentNative);
     const defiVolumeTier = mapDefiVolumeToTier(swapsVolumeUsd);
-    const liquidityTier = mapLiquidityYieldToTier(liquidityYieldRaw);
+    const liquidityTier = mapLiquidityUsdDaysToTier(liquidityUsdDaysRaw);
     const builderTier = mapBuilderScoreToTier(builderScoreRaw);
     const socialTier = mapSocialScoreToTier(socialScoreRaw);
 
@@ -998,6 +1104,7 @@ app.get("/api/wallet/:address/score", async (req, res) => {
       social: socialTier,
       gas_spent: gasSpentTier,
       defi_volume: defiVolumeTier,
+      coinbase_verified: coinbaseTier,
     };
 
     data.scores.tiers = tiers;
@@ -1029,7 +1136,7 @@ app.get("/api/wallet/:address/score", async (req, res) => {
     metrics.defi_volume.tier = defiVolumeTier;
     metrics.defi_volume.tier_label = labelDefiVolume(defiVolumeTier);
 
-    metrics.liquidity_yield.raw_value = liquidityYieldRaw;
+    metrics.liquidity_yield.raw_value = liquidityUsdDaysRaw;
     metrics.liquidity_yield.tier = liquidityTier;
     metrics.liquidity_yield.tier_label = labelLiquidityYield(liquidityTier);
 
@@ -1040,6 +1147,22 @@ app.get("/api/wallet/:address/score", async (req, res) => {
     metrics.social.raw_value = socialScoreRaw;
     metrics.social.tier = socialTier;
     metrics.social.tier_label = labelSocial(socialTier);
+
+    // coinbase_verified metric – создаём, если в моках её нет
+    if (!metrics.coinbase_verified) {
+      metrics.coinbase_verified = {
+        key: "coinbase_verified",
+        label: "Coinbase KYC",
+        category: "kyc",
+        raw_value: 0,
+        tier: 0,
+        tier_label: "Unverified",
+      };
+    }
+
+    metrics.coinbase_verified.raw_value = coinbaseVerified ? 1 : 0;
+    metrics.coinbase_verified.tier = coinbaseTier;
+    metrics.coinbase_verified.tier_label = labelCoinbaseVerified(coinbaseTier);
 
     // 5) Overall
     const overallTier = computeOverallTier(tiers);
@@ -1079,7 +1202,7 @@ app.get("/api/beast/:tokenId/metadata", async (req, res) => {
   try {
     const baseMetadata = await loadJsonFromMocks("beast_0_metadata.json");
 
-    if (!rpcProvider || !BEAST_NFT_ADDRESS || !BEAST_REGISTRY_ADDRESS) {
+    if (!rpcProvider || !BEAST_NFT_ADDRESS) {
       console.warn(
         "[/api/beast/:tokenId/metadata] Onchain config missing, returning static mock"
       );
@@ -1093,6 +1216,8 @@ app.get("/api/beast/:tokenId/metadata", async (req, res) => {
 
     const rarity = computeRarityFromOverallTier(score.overallTier);
     const userType = computeUserType(score.builderTier, score.socialTier);
+
+    const isCoinbaseVerifiedOnchain = score.coinbaseTier >= 5;
 
     const attributes = [
       { trait_type: "Species", value: "Proto Beast" },
@@ -1145,6 +1270,15 @@ app.get("/api/beast/:tokenId/metadata", async (req, res) => {
         value: score.defiVolumeTier,
       },
       {
+        display_type: "number",
+        trait_type: "Coinbase Verified Tier",
+        value: score.coinbaseTier,
+      },
+      {
+        trait_type: "Coinbase Verified",
+        value: isCoinbaseVerifiedOnchain ? "Yes" : "No",
+      },
+      {
         trait_type: "Owner",
         value: owner,
       },
@@ -1179,12 +1313,10 @@ app.post("/api/wallet/:address/push-onchain", async (req, res) => {
   try {
     const userAddress = req.params.address;
 
-    // 1. Валидация адреса
     if (!ethers.isAddress(userAddress)) {
       return res.status(400).json({ error: "Invalid wallet address" });
     }
 
-    // 2. Тянем live-скор с нашего же backend-а
     const backendBaseUrl =
       process.env.BEAST_BACKEND_URL || "http://localhost:4000";
 
@@ -1207,7 +1339,6 @@ app.post("/api/wallet/:address/push-onchain", async (req, res) => {
     const metrics = scoreJson?.scores?.metrics || {};
     const overallTier = scoreJson?.scores?.overall?.tier ?? 0;
 
-    // 3. Собираем BeastScore struct из метрик (tiers)
     const beastScoreStruct = {
       activityDaysTier: metrics.activity_days?.tier ?? 0,
       txCountTier: metrics.tx_count?.tier ?? 0,
@@ -1218,10 +1349,10 @@ app.post("/api/wallet/:address/push-onchain", async (req, res) => {
       socialTier: metrics.social?.tier ?? 0,
       gasSpentTier: metrics.gas_spent?.tier ?? 0,
       defiVolumeTier: metrics.defi_volume?.tier ?? 0,
+      coinbaseTier: metrics.coinbase_verified?.tier ?? 0,
       overallTier,
     };
 
-    // 4. Проверяем env для ончейн-записи
     const rpcUrl = process.env.BASE_RPC_URL;
     const privateKey = process.env.SCORE_ORACLE_PRIVATE_KEY;
     const registryAddress = process.env.BEAST_REGISTRY_ADDRESS;
@@ -1233,17 +1364,15 @@ app.post("/api/wallet/:address/push-onchain", async (req, res) => {
       });
     }
 
-    // 5. Подключаемся к Base и к реестру как оракул
     const provider = new ethers.JsonRpcProvider(rpcUrl);
     const wallet = new ethers.Wallet(privateKey, provider);
 
     const registryAbi = [
-      "function setScore(address user, tuple(uint8 activityDaysTier,uint8 txCountTier,uint8 defiSwapsTier,uint8 liquidityTier,uint8 builderTier,uint8 nftMintsTier,uint8 socialTier,uint8 gasSpentTier,uint8 defiVolumeTier,uint8 overallTier) score) external",
+      "function setScore(address user, tuple(uint8 activityDaysTier,uint8 txCountTier,uint8 defiSwapsTier,uint8 liquidityTier,uint8 builderTier,uint8 nftMintsTier,uint8 socialTier,uint8 gasSpentTier,uint8 defiVolumeTier,uint8 coinbaseTier,uint8 overallTier) score) external",
     ];
 
     const registry = new ethers.Contract(registryAddress, registryAbi, wallet);
 
-    // 6. Отправляем транзакцию setScore
     const tx = await registry.setScore(userAddress, beastScoreStruct);
     const receipt = await tx.wait();
 
@@ -1300,7 +1429,6 @@ app.get("/api/wallet/:address/beast-nft", async (req, res) => {
     const results = json.result || json.nfts || [];
 
     if (!Array.isArray(results) || results.length === 0) {
-      // У адреса нет Base Beast NFT
       return res.json({
         hasBeast: false,
         contract: nftAddress,
@@ -1309,7 +1437,6 @@ app.get("/api/wallet/:address/beast-nft", async (req, res) => {
       });
     }
 
-    // Берём первый найденный NFT
     const first = results[0];
 
     const tokenIdRaw = first.token_id || first.tokenId;

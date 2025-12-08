@@ -27,12 +27,26 @@ if (!BEAST_REGISTRY_ADDRESS) {
 const BACKEND_URL = BEAST_BACKEND_URL || "http://localhost:4000";
 
 // --- Минимальный ABI для BeastScoreRegistry ---
-// ВАЖНО: тут tuple уже с ИМЕНАМИ полей, чтобы можно было передавать объект
+// ВАЖНО: порядок полей в tuple ДОЛЖЕН совпадать с struct BeastScore в контракте:
+//
+// struct BeastScore {
+//   uint8 activityDaysTier;
+//   uint8 txCountTier;
+//   uint8 defiSwapsTier;
+//   uint8 liquidityTier;
+//   uint8 builderTier;
+//   uint8 nftMintsTier;
+//   uint8 socialTier;
+//   uint8 gasSpentTier;
+//   uint8 defiVolumeTier;
+//   uint8 coinbaseTier;
+//   uint8 overallTier;
+// }
 const BEAST_REGISTRY_ABI = [
   // setScore(address user, BeastScore score)
-  "function setScore(address user, (uint8 activityDaysTier,uint8 txCountTier,uint8 defiSwapsTier,uint8 liquidityTier,uint8 builderTier,uint8 nftMintsTier,uint8 socialTier,uint8 gasSpentTier,uint8 defiVolumeTier,uint8 overallTier) score) external",
+  "function setScore(address user, (uint8 activityDaysTier,uint8 txCountTier,uint8 defiSwapsTier,uint8 liquidityTier,uint8 builderTier,uint8 nftMintsTier,uint8 socialTier,uint8 gasSpentTier,uint8 defiVolumeTier,uint8 coinbaseTier,uint8 overallTier) score) external",
   // getScore(address user) view returns (BeastScore)
-  "function getScore(address user) view returns (tuple(uint8 activityDaysTier,uint8 txCountTier,uint8 defiSwapsTier,uint8 liquidityTier,uint8 builderTier,uint8 nftMintsTier,uint8 socialTier,uint8 gasSpentTier,uint8 defiVolumeTier,uint8 overallTier))"
+  "function getScore(address user) view returns (tuple(uint8 activityDaysTier,uint8 txCountTier,uint8 defiSwapsTier,uint8 liquidityTier,uint8 builderTier,uint8 nftMintsTier,uint8 socialTier,uint8 gasSpentTier,uint8 defiVolumeTier,uint8 coinbaseTier,uint8 overallTier))"
 ];
 
 // --- Провайдер + кошелёк-оракул ---
@@ -101,16 +115,41 @@ async function pushScore(walletToScore) {
   console.log("📊 Tiers from backend:", tiers);
   console.log("⭐ Overall tier from backend:", overallTierBackend);
 
+  // Забираем tier-ы по всем 10 метрикам
+  const activityDaysTier = Number(tiers.activity_days || 0);
+  const txCountTier = Number(tiers.tx_count || 0);
+  const defiSwapsTier = Number(tiers.defi_swaps || 0);
+  const liquidityTier = Number(tiers.liquidity_yield || 0);
+  const builderTier = Number(tiers.builder || 0);
+  const nftMintsTier = Number(tiers.nft_mints || 0);
+  const socialTier = Number(tiers.social || 0);
+  const gasSpentTier = Number(tiers.gas_spent || 0);
+  const defiVolumeTier = Number(tiers.defi_volume || 0);
+
+  // Новая метрика: coinbase_verified
+  let coinbaseTier = Number(tiers.coinbase_verified || 0);
+
+  // Наша модель: coinbaseTier строго 0 или 5
+  if (coinbaseTier !== 5) {
+    if (coinbaseTier !== 0) {
+      console.warn(
+        `⚠️ Backend returned unexpected coinbase_verified tier = ${coinbaseTier}, forcing to 0`
+      );
+    }
+    coinbaseTier = 0;
+  }
+
   const scoreStruct = {
-    activityDaysTier: Number(tiers.activity_days || 0),
-    txCountTier: Number(tiers.tx_count || 0),
-    defiSwapsTier: Number(tiers.defi_swaps || 0),
-    liquidityTier: Number(tiers.liquidity_yield || 0),
-    builderTier: Number(tiers.builder || 0),
-    nftMintsTier: Number(tiers.nft_mints || 0),
-    socialTier: Number(tiers.social || 0),
-    gasSpentTier: Number(tiers.gas_spent || 0),
-    defiVolumeTier: Number(tiers.defi_volume || 0),
+    activityDaysTier,
+    txCountTier,
+    defiSwapsTier,
+    liquidityTier,
+    builderTier,
+    nftMintsTier,
+    socialTier,
+    gasSpentTier,
+    defiVolumeTier,
+    coinbaseTier,
     overallTier: overallTierBackend
   };
 
@@ -123,7 +162,7 @@ async function pushScore(walletToScore) {
   const receipt = await tx.wait();
   console.log("✅ Tx mined in block", receipt.blockNumber);
 
-    const onchainScore = await registry.getScore(walletToScore);
+  const onchainScore = await registry.getScore(walletToScore);
   console.log("🔎 Onchain score (from registry) raw:", onchainScore);
 
   const parsed = {
@@ -136,7 +175,8 @@ async function pushScore(walletToScore) {
     socialTier: Number(onchainScore.socialTier ?? onchainScore[6] ?? 0),
     gasSpentTier: Number(onchainScore.gasSpentTier ?? onchainScore[7] ?? 0),
     defiVolumeTier: Number(onchainScore.defiVolumeTier ?? onchainScore[8] ?? 0),
-    overallTier: Number(onchainScore.overallTier ?? onchainScore[9] ?? 0)
+    coinbaseTier: Number(onchainScore.coinbaseTier ?? onchainScore[9] ?? 0),
+    overallTier: Number(onchainScore.overallTier ?? onchainScore[10] ?? 0)
   };
 
   console.log("🔎 Parsed onchain score:", parsed);

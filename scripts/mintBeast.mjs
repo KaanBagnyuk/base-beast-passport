@@ -28,11 +28,26 @@ if (!MINTER_PRIVATE_KEY) {
 const BACKEND_URL = BEAST_BACKEND_URL || "http://localhost:4000";
 
 // --- ABI для BaseBeastNFT (минимальный) ----
-
+//
+// BeastScoreLocal в контракте BaseBeastNFT:
+//
+// struct BeastScoreLocal {
+//   uint8 activityDaysTier;
+//   uint8 txCountTier;
+//   uint8 defiSwapsTier;
+//   uint8 liquidityTier;
+//   uint8 builderTier;
+//   uint8 nftMintsTier;
+//   uint8 socialTier;
+//   uint8 gasSpentTier;
+//   uint8 defiVolumeTier;
+//   uint8 coinbaseTier;
+//   uint8 overallTier;
+// }
 const BEAST_NFT_ABI = [
   "function mintFromScore() external",
   "function nextTokenId() public view returns (uint256)",
-  "function beastScores(uint256 tokenId) public view returns (uint8,uint8,uint8,uint8,uint8,uint8,uint8,uint8,uint8,uint8)",
+  "function beastScores(uint256 tokenId) public view returns (uint8,uint8,uint8,uint8,uint8,uint8,uint8,uint8,uint8,uint8,uint8)",
   "function ownerOf(uint256 tokenId) public view returns (address)"
 ];
 
@@ -70,7 +85,8 @@ async function fetchRawMetricsFromBackend(address) {
     nft_mints: metrics.nft_mints?.raw_value ?? 0,
     social: metrics.social?.raw_value ?? 0,
     gas_spent: metrics.gas_spent?.raw_value ?? 0,
-    defi_volume: metrics.defi_volume?.raw_value ?? 0
+    defi_volume: metrics.defi_volume?.raw_value ?? 0,
+    coinbase_verified: metrics.coinbase_verified?.raw_value ?? 0
   };
 }
 
@@ -112,7 +128,8 @@ async function mintBeast() {
     socialTier: Number(scoreTuple[6]),
     gasSpentTier: Number(scoreTuple[7]),
     defiVolumeTier: Number(scoreTuple[8]),
-    overallTier: Number(scoreTuple[9])
+    coinbaseTier: Number(scoreTuple[9]),
+    overallTier: Number(scoreTuple[10])
   };
 
   console.log("🔎 Onchain BeastScore snapshot (tiers):");

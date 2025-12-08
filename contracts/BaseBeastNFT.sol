@@ -11,24 +11,29 @@ contract BaseBeastNFT is ERC721, Ownable {
     BeastScoreRegistry public scoreRegistry;
 
     // Локальный снапшот скоринга на момент минта
+    // Структура зеркалит BeastScoreRegistry.BeastScore,
+    // но хранится локально на уровне токена
     struct BeastScoreLocal {
-        uint8 activityDaysTier;
-        uint8 txCountTier;
-        uint8 defiSwapsTier;
-        uint8 liquidityTier;
-        uint8 builderTier;
-        uint8 nftMintsTier;
-        uint8 socialTier;
-        uint8 gasSpentTier;
-        uint8 defiVolumeTier;
-        uint8 overallTier;
+        uint8 activityDaysTier; // 0–5  (Activity Days)
+        uint8 txCountTier;      // 0–5  (Tx Count)
+        uint8 defiSwapsTier;    // 0–5  (DeFi Swaps)
+        uint8 liquidityTier;    // 0–5  (Liquidity & Yield, USD·days)
+        uint8 builderTier;      // 0–5  (Builder Score)
+        uint8 nftMintsTier;     // 0–5  (NFT Mints)
+        uint8 socialTier;       // 0–5  (Social Score)
+        uint8 gasSpentTier;     // 0–5  (Gas Spent, ETH)
+        uint8 defiVolumeTier;   // 0–5  (DeFi Volume, USD)
+        uint8 coinbaseTier;     // 0–5  (Coinbase KYC; по факту 0 или 5)
+        uint8 overallTier;      // 0–5  (средний tier по 10 метрикам)
     }
 
-    // Простая визуальная модель (пока без мелких деталей)
+    // Простая визуальная модель (пока без мелких деталей вроде серёжки)
     struct BeastVisual {
         uint8 speciesId; // 0–14
-        uint8 rarity;    // 0=Common, 1=Rare, 2=Legendary
-        uint8 userType;  // 0=User, 1=Influencer (потом), 2=Builder
+        // 0 = Common, 1 = Rare, 2 = Legendary
+        uint8 rarity;
+        // 0 = User, 1 = Influencer, 2 = Builder
+        uint8 userType;
     }
 
     uint256 public nextTokenId;
@@ -60,7 +65,7 @@ contract BaseBeastNFT is ERC721, Ownable {
         BeastScoreRegistry.BeastScore memory s = scoreRegistry.getScore(msg.sender);
 
         // ВАЖНО: в MVP НЕ делаем жёстких require по overallTier,
-        // чтобы не ломать минт если скор = 0 или меняется модель.
+        // чтобы не ломать минт, если скор = 0 или меняется модель.
         // Если захочется — добавим позже:
         // require(s.overallTier > 0, "No score set for user");
 
@@ -95,19 +100,26 @@ contract BaseBeastNFT is ERC721, Ownable {
         uint256 rarityRoll = rand % 100;
 
         if (rarityRoll < 2) {
-            v.rarity = 2; // Legendary
+            v.rarity = 2; // Legendary (~2%)
         } else if (rarityRoll < 20) {
-            v.rarity = 1; // Rare
+            v.rarity = 1; // Rare (~18%)
         } else {
             v.rarity = 0; // Common
         }
 
+        // 15 условных видов бейстов
         v.speciesId = uint8((rand / 100) % 15);
 
-        if (s.builderTier >= 3) {
+        // Логика userType в соответствии с концептом:
+        //  - Builder, если builderTier ≥ 4
+        //  - Influencer, если socialTier ≥ 4
+        //  - иначе User
+        if (s.builderTier >= 4) {
             v.userType = 2; // Builder
+        } else if (s.socialTier >= 4) {
+            v.userType = 1; // Influencer
         } else {
-            v.userType = 0; // User (пока без Influencer)
+            v.userType = 0; // User
         }
     }
 
@@ -123,6 +135,7 @@ contract BaseBeastNFT is ERC721, Ownable {
         out.socialTier = s.socialTier;
         out.gasSpentTier = s.gasSpentTier;
         out.defiVolumeTier = s.defiVolumeTier;
+        out.coinbaseTier = s.coinbaseTier; // новое поле
         out.overallTier = s.overallTier;
     }
 

@@ -19,16 +19,52 @@ const BEAST_REGISTRY_ADDRESS =
 
 const BASE_CHAIN_ID = Number(import.meta.env.VITE_BASE_CHAIN_ID || "8453");
 
+// --- Slots → папки ассетов ---
+
+const SLOT_FOLDER_MAP = {
+  size: "size",
+  muscles: "muscles",
+  weapon: "weapon",
+  shield: "shield",
+  armor: "armor",
+  neck_medallion: "neck_medallion",
+  helmet: "helmet",
+  ring: "ring",
+  boots: "boots",
+  earring: "earring",
+};
+
+function getTraitIconPath(slotKey, tier, iconKey) {
+  // Для T0 предмет не показываем
+  if (!iconKey || tier === 0) return null;
+
+  const folder = SLOT_FOLDER_MAP[slotKey] || slotKey;
+  // подпапка по тиру: t1, t2, ... t5
+  const tierFolder = `t${tier}`;
+
+  return `/assets/${folder}/${tierFolder}/${iconKey}.png`;
+}
+
+function getTraitSpinPath(slotKey, tier, iconKey) {
+  // Для T0 предмет не показываем
+  if (!iconKey || tier === 0) return null;
+
+  const folder = SLOT_FOLDER_MAP[slotKey] || slotKey;
+  const tierFolder = `t${tier}`;
+
+  return `/assets/${folder}/${tierFolder}/${iconKey}_spin.mp4`;
+}
+
 // --- Minimal ABIs ---
 
 const BEAST_NFT_ABI = [
-  // mintFromScore() external returns (uint256)
-  "function mintFromScore() external returns (uint256)",
+  // mintFromScore() external
+  "function mintFromScore() external",
 ];
 
 const BEAST_REGISTRY_ABI = [
   // getScore(address user) view returns (BeastScore)
-  "function getScore(address user) view returns (tuple(uint8 activityDaysTier,uint8 txCountTier,uint8 defiSwapsTier,uint8 liquidityTier,uint8 builderTier,uint8 nftMintsTier,uint8 socialTier,uint8 gasSpentTier,uint8 defiVolumeTier,uint8 overallTier))",
+  "function getScore(address user) view returns (tuple(uint8 activityDaysTier,uint8 txCountTier,uint8 defiSwapsTier,uint8 liquidityTier,uint8 builderTier,uint8 nftMintsTier,uint8 socialTier,uint8 gasSpentTier,uint8 defiVolumeTier,uint8 coinbaseTier,uint8 overallTier))",
 ];
 
 function App() {
@@ -183,7 +219,8 @@ function App() {
         socialTier: Number(raw.socialTier ?? raw[6] ?? 0),
         gasSpentTier: Number(raw.gasSpentTier ?? raw[7] ?? 0),
         defiVolumeTier: Number(raw.defiVolumeTier ?? raw[8] ?? 0),
-        overallTier: Number(raw.overallTier ?? raw[9] ?? 0),
+        coinbaseTier: Number(raw.coinbaseTier ?? raw[9] ?? 0),
+        overallTier: Number(raw.overallTier ?? raw[10] ?? 0),
       };
 
       setOnchainScore(parsed);
@@ -456,7 +493,7 @@ function App() {
                   Beast Visual Traits (Live)
                 </h2>
                 <span className="text-[11px] text-slate-500">
-                  Preview (text-only MVP)
+                  Visual preview (icons / spin)
                 </span>
               </div>
 
@@ -469,6 +506,8 @@ function App() {
                   const tierCfg =
                     (cfg.tiers && cfg.tiers[tierKey]) || null;
                   const iconKey = tierCfg?.icon_key;
+                  const iconPath = getTraitIconPath(key, tierNum, iconKey);
+                  const spinPath = getTraitSpinPath(key, tierNum, iconKey);
 
                   return (
                     <div
@@ -483,6 +522,36 @@ function App() {
                           Tier {tierNum}/5
                         </span>
                       </div>
+
+                      {(iconPath || spinPath) && (
+                        <div className="mt-1 flex justify-center">
+                          <div className="relative h-16 w-16">
+                            {iconPath && (
+                              <img
+                                src={iconPath}
+                                alt={tierCfg?.name || displayName}
+                                className="h-16 w-16 object-contain drop-shadow"
+                                onError={(e) => {
+                                  e.currentTarget.style.display = "none";
+                                }}
+                              />
+                            )}
+                            {spinPath && (
+                              <video
+                                src={spinPath}
+                                autoPlay
+                                loop
+                                muted
+                                playsInline
+                                className="absolute inset-0 h-16 w-16 object-contain drop-shadow"
+                                onError={(e) => {
+                                  e.currentTarget.style.display = "none";
+                                }}
+                              />
+                            )}
+                          </div>
+                        </div>
+                      )}
 
                       {iconKey && (
                         <div className="text-[10px] text-slate-500">
@@ -695,9 +764,6 @@ function App() {
               <h2 className="text-sm font-semibold text-slate-200">
                 Onchain Beast NFT snapshot
               </h2>
-              <span className="text-[11px] text-slate-500">
-                /api/beast/:tokenId/metadata
-              </span>
             </div>
 
             <button

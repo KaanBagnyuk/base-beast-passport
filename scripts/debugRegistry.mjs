@@ -16,9 +16,24 @@ if (!BEAST_REGISTRY_ADDRESS) {
 }
 
 // ABI только для чтения
+// ВАЖНО: структура tuple должна совпадать с BeastScore в BeastScoreRegistry:
+//
+// struct BeastScore {
+//   uint8 activityDaysTier;
+//   uint8 txCountTier;
+//   uint8 defiSwapsTier;
+//   uint8 liquidityTier;
+//   uint8 builderTier;
+//   uint8 nftMintsTier;
+//   uint8 socialTier;
+//   uint8 gasSpentTier;
+//   uint8 defiVolumeTier;
+//   uint8 coinbaseTier;
+//   uint8 overallTier;
+// }
 const BEAST_REGISTRY_ABI = [
   "function scoreOracle() view returns (address)",
-  "function getScore(address user) view returns (tuple(uint8 activityDaysTier,uint8 txCountTier,uint8 defiSwapsTier,uint8 liquidityTier,uint8 builderTier,uint8 nftMintsTier,uint8 socialTier,uint8 gasSpentTier,uint8 defiVolumeTier,uint8 overallTier))"
+  "function getScore(address user) view returns (tuple(uint8 activityDaysTier,uint8 txCountTier,uint8 defiSwapsTier,uint8 liquidityTier,uint8 builderTier,uint8 nftMintsTier,uint8 socialTier,uint8 gasSpentTier,uint8 defiVolumeTier,uint8 coinbaseTier,uint8 overallTier))"
 ];
 
 const provider = new ethers.JsonRpcProvider(RPC_URL);
@@ -62,7 +77,8 @@ async function main() {
     socialTier: Number(score.socialTier ?? score[6] ?? 0),
     gasSpentTier: Number(score.gasSpentTier ?? score[7] ?? 0),
     defiVolumeTier: Number(score.defiVolumeTier ?? score[8] ?? 0),
-    overallTier: Number(score.overallTier ?? score[9] ?? 0)
+    coinbaseTier: Number(score.coinbaseTier ?? score[9] ?? 0),
+    overallTier: Number(score.overallTier ?? score[10] ?? 0)
   };
 
   console.log("🔎 Parsed onchain score:", parsed);

@@ -3,12 +3,12 @@
     "display_name": "Size",
     "metric": "activity_days",
     "tiers": {
-      "0": { "name": "Glitchling", "icon_key": "size_t0_glitchling" },
-      "1": { "name": "Wandering Sprite", "icon_key": "size_t1_wandering_sprite" },
+      "0": { "name": "Wisp", "icon_key": "size_t0_wisp" },
+      "1": { "name": "Sprout", "icon_key": "size_t1_sprout" },
       "2": { "name": "Proto Beast", "icon_key": "size_t2_proto_beast" },
       "3": { "name": "Seasoned Beast", "icon_key": "size_t3_seasoned_beast" },
-      "4": { "name": "Base Titan", "icon_key": "size_t4_base_titan" },
-      "5": { "name": "World-Eater", "icon_key": "size_t5_world_eater" }
+      "4": { "name": "Ascended Giant", "icon_key": "size_t4_ascended_giant" },
+      "5": { "name": "Titan of Base", "icon_key": "size_t5_titan_of_base" }
     }
   },
   "muscles": {
@@ -18,7 +18,7 @@
       "0": { "name": "Paper Arms", "icon_key": "muscles_t0_paper_arms" },
       "1": { "name": "Warmup Flex", "icon_key": "muscles_t1_warmup_flex" },
       "2": { "name": "Onchain Lifter", "icon_key": "muscles_t2_onchain_lifter" },
-      "3": { "name": "Heavy Hitter", "icon_key": "muscles_t3_heavy_hitter" },
+      "3": { "name": "Onchain Warrior", "icon_key": "muscles_t3_onchain_warrior" },
       "4": { "name": "Gaslord", "icon_key": "muscles_t4_gaslord" },
       "5": { "name": "Chainbreaker", "icon_key": "muscles_t5_chainbreaker" }
     }
@@ -30,9 +30,9 @@
       "0": { "name": "No Weapon", "icon_key": "weapon_t0_none" },
       "1": { "name": "Wooden Dagger", "icon_key": "weapon_t1_wooden_dagger" },
       "2": { "name": "Steel Blade", "icon_key": "weapon_t2_steel_blade" },
-      "3": { "name": "Runic Greatsword", "icon_key": "weapon_t3_runic_greatsword" },
-      "4": { "name": "DeFi Scythe", "icon_key": "weapon_t4_defi_scythe" },
-      "5": { "name": "Singularity Cannon", "icon_key": "weapon_t5_singularity_cannon" }
+      "3": { "name": "Runic Sword", "icon_key": "weapon_t3_runic_sword" },
+      "4": { "name": "DEX Halberd", "icon_key": "weapon_t4_dex_halberd" },
+      "5": { "name": "Based War Hammer", "icon_key": "weapon_t5_based_war_hammer" }
     }
   },
   "shield": {
@@ -55,16 +55,16 @@
       "1": { "name": "Tinkerer Vest", "icon_key": "armor_t1_tinkerer_vest" },
       "2": { "name": "Builder Harness", "icon_key": "armor_t2_builder_harness" },
       "3": { "name": "Architect Plate", "icon_key": "armor_t3_architect_plate" },
-      "4": { "name": "Protocol Armor", "icon_key": "armor_t4_protocol_armor" },
-      "5": { "name": "Godsmith Regalia", "icon_key": "armor_t5_godsmith_regalia" }
+      "4": { "name": "Architect Exosuit", "icon_key": "armor_t4_architect_exosuit" },
+      "5": { "name": "Godsmith Based Armor", "icon_key": "armor_t5_godsmith_based_armor" }
     }
   },
   "neck_medallion": {
     "display_name": "Neck Medallion",
     "metric": "nft_mints",
     "tiers": {
-      "0": { "name": "Empty Chain", "icon_key": "neck_t0_empty_chain" },
-      "1": { "name": "First Mint Charm", "icon_key": "neck_t1_first_mint_charm" },
+      "0": { "name": "Bare Neck", "icon_key": "neck_t0_bare_neck" },
+      "1": { "name": "Rusty Tag", "icon_key": "neck_t1_rusty_tag" },
       "2": { "name": "Collector Emblem", "icon_key": "neck_t2_collector_emblem" },
       "3": { "name": "Enthusiast Sigil", "icon_key": "neck_t3_enthusiast_sigil" },
       "4": { "name": "DeGen Medallion", "icon_key": "neck_t4_degen_medallion" },
@@ -75,12 +75,12 @@
     "display_name": "Helmet",
     "metric": "social",
     "tiers": {
-      "0": { "name": "Silent Hood", "icon_key": "helmet_t0_silent_hood" },
-      "1": { "name": "Lurker Cap", "icon_key": "helmet_t1_lurker_cap" },
+      "0": { "name": "Unmasked", "icon_key": "helmet_t0_unmasked" },
+      "1": { "name": "Cloth Hood", "icon_key": "helmet_t1_cloth_hood" },
       "2": { "name": "Speaker Helm", "icon_key": "helmet_t2_speaker_helm" },
-      "3": { "name": "Herald Crown", "icon_key": "helmet_t3_herald_crown" },
+      "3": { "name": "Celebrity Cap", "icon_key": "helmet_t3_celebrity_cap" },
       "4": { "name": "Influencer Halo", "icon_key": "helmet_t4_influencer_halo" },
-      "5": { "name": "Celebrity Circlet", "icon_key": "helmet_t5_celebrity_circlet" }
+      "5": { "name": "Voice of Base", "icon_key": "helmet_t5_voice_of_base" }
     }
   },
   "ring": {
@@ -88,11 +88,11 @@
     "metric": "gas_spent",
     "tiers": {
       "0": { "name": "No Ring", "icon_key": "ring_t0_none" },
-      "1": { "name": "Faded Ring", "icon_key": "ring_t1_faded" },
-      "2": { "name": "Bronze Ring", "icon_key": "ring_t2_bronze" },
-      "3": { "name": "Silver Ring", "icon_key": "ring_t3_silver" },
-      "4": { "name": "Gold Ring", "icon_key": "ring_t4_gold" },
-      "5": { "name": "Mythic Ring", "icon_key": "ring_t5_mythic" }
+      "1": { "name": "Rusty Loop", "icon_key": "ring_t1_rusty_loop" },
+      "2": { "name": "Bronze Gas Ring", "icon_key": "ring_t2_bronze_gas_ring" },
+      "3": { "name": "Silver Burner Ring", "icon_key": "ring_t3_silver_burner_ring" },
+      "4": { "name": "Golden Flame Ring", "icon_key": "ring_t4_golden_flame_ring" },
+      "5": { "name": "Eternal Gas Engine", "icon_key": "ring_t5_eternal_gas_engine" }
     }
   },
   "boots": {
@@ -101,10 +101,18 @@
     "tiers": {
       "0": { "name": "Barefoot", "icon_key": "boots_t0_barefoot" },
       "1": { "name": "Dusty Sandals", "icon_key": "boots_t1_dusty_sandals" },
-      "2": { "name": "Traveler Boots", "icon_key": "boots_t2_traveler" },
-      "3": { "name": "Explorer Boots", "icon_key": "boots_t3_explorer" },
-      "4": { "name": "Blazing Boots", "icon_key": "boots_t4_blazing" },
-      "5": { "name": "Warp Boots", "icon_key": "boots_t5_warp" }
+      "2": { "name": "Traveler Boots", "icon_key": "boots_t2_traveler_boots" },
+      "3": { "name": "Pathfinder Greaves", "icon_key": "boots_t3_pathfinder_greaves" },
+      "4": { "name": "Blazing Boots", "icon_key": "boots_t4_blazing_boots" },
+      "5": { "name": "Warp Boots", "icon_key": "boots_t5_warp_boots" }
+    }
+  },
+  "earring": {
+    "display_name": "Earring",
+    "metric": "coinbase_verified",
+    "tiers": {
+      "0": { "name": "No Earring", "icon_key": "earring_t0_none" },
+      "5": { "name": "Onchain Sigil Earring", "icon_key": "earring_t5_onchain_sigil" }
     }
   }
 }
