@@ -22,12 +22,23 @@ a:hover {
   color: #535bf2;
 }
 
+html,
+body {
+  height: 100%;
+}
+
 body {
   margin: 0;
-  display: flex;
-  place-items: center;
   min-width: 320px;
   min-height: 100vh;
+
+  /* ВАЖНО: центрируем весь React-root */
+  display: flex;
+  justify-content: center;   /* центр по горизонтали */
+  align-items: flex-start;   /* сверху, а не по центру экрана */
+
+  background-color: #020617; /* slate-950, как в App.jsx */
+  color: #f8fafc;            /* slate-50 */
 }
 
 h1 {
@@ -65,4 +76,8 @@ button:focus-visible {
   button {
     background-color: #f9f9f9;
   }
+}
+#root {
+  width: 1120px;   /* ширина нашей центральной колонки */
+  max-width: 100%; /* чтобы на маленьких экранах всё влезало */
 }

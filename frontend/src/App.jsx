@@ -1,26 +1,31 @@
-import { useState } from "react";
-import { ethers } from "ethers";
-import visualConfig from "./config/beast_visual_config.json";
+import { useEffect, useMemo, useState } from "react";
+import visualConfigData from "./config/beast_visual_config.json";
 
-// --- Config (backend + contracts) ---
+const API_BASE_URL =
+  import.meta.env.VITE_BACKEND_URL || "http://localhost:4000";
 
-const BACKEND_URL =
-  import.meta.env.VITE_BEAST_BACKEND_URL || "http://localhost:4000";
+// ───────────────────────────────
+// Утилиты
+// ───────────────────────────────
 
-const DEFAULT_ADDRESS = "0xfd32507B33220E1Be82E9bb83B4Ea74d4B59Cb25";
+function shortAddress(addr) {
+  if (!addr) return "";
+  return addr.slice(0, 6) + "..." + addr.slice(-4);
+}
 
-const BEAST_NFT_ADDRESS =
-  import.meta.env.VITE_BEAST_NFT_ADDRESS ||
-  "0x80145474Ad3050ec9445D80BF5bfD06612daE4F6";
+// Пока всегда один вариант тела: Proto Beast T2/T2
+const BEAST_BODY_MEDIA = {
+  "2-2": {
+    image: "/assets/beast_body/proto_beast_t2.png",
+    video: "/assets/beast_body/proto_beast_t2_idle.mp4",
+  },
+};
 
-const BEAST_REGISTRY_ADDRESS =
-  import.meta.env.VITE_BEAST_REGISTRY_ADDRESS ||
-  "0xA27858BAe75fc60AE72F41A4Ec2eeBAf6Ffa4bE5";
+function getBeastBodyMedia() {
+  return BEAST_BODY_MEDIA["2-2"];
+}
 
-const BASE_CHAIN_ID = Number(import.meta.env.VITE_BASE_CHAIN_ID || "8453");
-
-// --- Slots → папки ассетов ---
-
+// Папки ассетов для слотов
 const SLOT_FOLDER_MAP = {
   size: "size",
   muscles: "muscles",
@@ -35,859 +40,1206 @@ const SLOT_FOLDER_MAP = {
 };
 
 function getTraitIconPath(slotKey, tier, iconKey) {
-  // Для T0 предмет не показываем
   if (!iconKey || tier === 0) return null;
-
   const folder = SLOT_FOLDER_MAP[slotKey] || slotKey;
-  // подпапка по тиру: t1, t2, ... t5
-  const tierFolder = `t${tier}`;
-
-  return `/assets/${folder}/${tierFolder}/${iconKey}.png`;
+  return `/assets/${folder}/${iconKey}.png`;
 }
 
 function getTraitSpinPath(slotKey, tier, iconKey) {
-  // Для T0 предмет не показываем
   if (!iconKey || tier === 0) return null;
-
   const folder = SLOT_FOLDER_MAP[slotKey] || slotKey;
-  const tierFolder = `t${tier}`;
-
-  return `/assets/${folder}/${tierFolder}/${iconKey}_spin.mp4`;
+  return `/assets/${folder}/${iconKey}_spin.mp4`;
 }
 
-// --- Minimal ABIs ---
+function buildVisualConfigMap(rawConfig) {
+  const map = {};
+  if (!rawConfig || typeof rawConfig !== "object") return map;
+  for (const [slotKey, cfg] of Object.entries(rawConfig)) {
+    map[slotKey] = cfg || {};
+  }
+  return map;
+}
 
-const BEAST_NFT_ABI = [
-  // mintFromScore() external
-  "function mintFromScore() external",
-];
+// Метрики могут приходить либо массивом, либо объектом
+function buildMetricsMap(profile) {
+  const rawMetrics = profile?.scores?.metrics;
+  const map = {};
 
-const BEAST_REGISTRY_ABI = [
-  // getScore(address user) view returns (BeastScore)
-  "function getScore(address user) view returns (tuple(uint8 activityDaysTier,uint8 txCountTier,uint8 defiSwapsTier,uint8 liquidityTier,uint8 builderTier,uint8 nftMintsTier,uint8 socialTier,uint8 gasSpentTier,uint8 defiVolumeTier,uint8 coinbaseTier,uint8 overallTier))",
-];
+  if (Array.isArray(rawMetrics)) {
+    for (const m of rawMetrics) {
+      if (m && m.key) {
+        map[m.key] = m;
+      }
+    }
+    return map;
+  }
+
+  if (rawMetrics && typeof rawMetrics === "object") {
+    for (const [key, value] of Object.entries(rawMetrics)) {
+      if (value && typeof value === "object") {
+        const metricKey = value.key || key;
+        map[metricKey] = value;
+      }
+    }
+    return map;
+  }
+
+  return map;
+}
+
+// ───────────────────────────────
+// App
+// ───────────────────────────────
 
 function App() {
-  const [address, setAddress] = useState(DEFAULT_ADDRESS);
-  const [loading, setLoading] = useState(false);
+  const [walletAddress, setWalletAddress] = useState("");
+  const [isConnected, setIsConnected] = useState(false);
+
   const [profile, setProfile] = useState(null);
-  const [error, setError] = useState("");
-
-  // onchain / registry state
-  const [onchainScore, setOnchainScore] = useState(null);
-  const [loadingOnchain, setLoadingOnchain] = useState(false);
-
-  const [minting, setMinting] = useState(false);
-  const [mintError, setMintError] = useState("");
-  const [mintTx, setMintTx] = useState(null);
-
-  // push-onchain state
-  const [pushingOnchain, setPushingOnchain] = useState(false);
-  const [pushError, setPushError] = useState("");
-  const [pushResult, setPushResult] = useState(null);
-
-  // Beast NFT snapshot state
+  const [hasBeast, setHasBeast] = useState(false);
   const [beastNftInfo, setBeastNftInfo] = useState(null);
   const [beastMetadata, setBeastMetadata] = useState(null);
-  const [loadingBeastMeta, setLoadingBeastMeta] = useState(false);
-  const [beastMetaError, setBeastMetaError] = useState("");
 
-  const visualConfigMap = visualConfig || {};
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [isLoadingProfile, setIsLoadingProfile] = useState(false);
+  const [isLoadingBeast, setIsLoadingBeast] = useState(false);
+  const [isMinting, setIsMinting] = useState(false);
+  const [error, setError] = useState("");
 
-  // --- Backend: load Beast profile ---
+  const metricsByKey = useMemo(() => buildMetricsMap(profile), [profile]);
+  const overall = profile?.scores?.overall || null;
+  const beastInfo = profile?.beast_preview || null;
 
-  const handleLoadProfile = async () => {
-    setError("");
-    setProfile(null);
-    setOnchainScore(null);
-    setMintError("");
-    setMintTx(null);
-    setPushError("");
-    setPushResult(null);
-    setBeastNftInfo(null);
-    setBeastMetadata(null);
-    setBeastMetaError("");
+  const visualConfigMap = useMemo(
+    () => buildVisualConfigMap(visualConfigData),
+    []
+  );
 
-    const addr = address.trim();
-    if (!addr) {
-      setError("Please enter a wallet address.");
+  // ───────────────────────────────
+  // Подключение кошелька
+  // ───────────────────────────────
+
+  async function handleConnect() {
+    if (typeof window === "undefined" || !window.ethereum) {
+      setError(
+        "No wallet detected. Please install MetaMask, Coinbase Wallet or another EVM wallet extension."
+      );
       return;
     }
-
+    setError("");
+    setIsConnecting(true);
     try {
-      setLoading(true);
-      const res = await fetch(
-        `${BACKEND_URL.replace(/\/$/, "")}/api/wallet/${addr}/score`
-      );
-
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`Backend error ${res.status}: ${text.slice(0, 200)}`);
-      }
-
-      const json = await res.json();
-      setProfile(json);
-    } catch (err) {
-      console.error(err);
-      setError(err.message || "Failed to load Beast profile.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // --- Wallet connect (just to grab address / provider) ---
-
-  const handleUseConnectedWallet = async () => {
-    try {
-      if (!window.ethereum) {
-        setError("No Ethereum provider found (MetaMask / Wallet).");
-        return;
-      }
-
       const accounts = await window.ethereum.request({
         method: "eth_requestAccounts",
       });
-
-      if (!accounts || !accounts.length) {
+      if (accounts && accounts.length > 0) {
+        const addr = String(accounts[0]);
+        setWalletAddress(addr);
+        setIsConnected(true);
+      } else {
         setError("No accounts returned from wallet.");
-        return;
       }
-
-      const addr = accounts[0];
-      setAddress(addr);
     } catch (err) {
-      console.error(err);
-      setError("Failed to get wallet from provider.");
+      console.error("Wallet connect error:", err);
+      const msg =
+        err && err.message
+          ? `Failed to connect wallet: ${err.message}`
+          : "Failed to connect wallet.";
+      setError(msg);
+    } finally {
+      setIsConnecting(false);
     }
-  };
-
-  // --- Helpers: provider on Base Mainnet ---
-
-  async function getBrowserProvider() {
-    if (!window.ethereum) {
-      throw new Error("No Ethereum provider found (MetaMask / Wallet).");
-    }
-
-    const provider = new ethers.BrowserProvider(window.ethereum);
-    const network = await provider.getNetwork();
-    const chainId = Number(network.chainId);
-
-    if (chainId !== BASE_CHAIN_ID) {
-      throw new Error(
-        `Please switch your wallet to Base Mainnet (chainId ${BASE_CHAIN_ID}). Current chainId: ${chainId}`
-      );
-    }
-
-    return provider;
   }
 
-  // --- Onchain: read BeastScore from registry ---
-
-  const handleLoadOnchainScore = async () => {
-    setMintError("");
-    setOnchainScore(null);
-
-    try {
-      setLoadingOnchain(true);
-
-      const addr = address.trim();
-      if (!addr) {
-        throw new Error("Address is empty.");
+  // авто-коннект
+  useEffect(() => {
+    async function tryAutoConnect() {
+      if (typeof window === "undefined" || !window.ethereum) return;
+      try {
+        const accounts = await window.ethereum.request({
+          method: "eth_accounts",
+        });
+        if (accounts && accounts.length > 0) {
+          const addr = String(accounts[0]);
+          setWalletAddress(addr);
+          setIsConnected(true);
+        }
+      } catch (err) {
+        console.warn("Auto-connect failed", err);
       }
-
-      if (!BEAST_REGISTRY_ADDRESS) {
-        throw new Error("Registry address is not configured.");
-      }
-
-      const provider = await getBrowserProvider();
-
-      const registry = new ethers.Contract(
-        BEAST_REGISTRY_ADDRESS,
-        BEAST_REGISTRY_ABI,
-        provider
-      );
-
-      const raw = await registry.getScore(addr);
-
-      const parsed = {
-        activityDaysTier: Number(raw.activityDaysTier ?? raw[0] ?? 0),
-        txCountTier: Number(raw.txCountTier ?? raw[1] ?? 0),
-        defiSwapsTier: Number(raw.defiSwapsTier ?? raw[2] ?? 0),
-        liquidityTier: Number(raw.liquidityTier ?? raw[3] ?? 0),
-        builderTier: Number(raw.builderTier ?? raw[4] ?? 0),
-        nftMintsTier: Number(raw.nftMintsTier ?? raw[5] ?? 0),
-        socialTier: Number(raw.socialTier ?? raw[6] ?? 0),
-        gasSpentTier: Number(raw.gasSpentTier ?? raw[7] ?? 0),
-        defiVolumeTier: Number(raw.defiVolumeTier ?? raw[8] ?? 0),
-        coinbaseTier: Number(raw.coinbaseTier ?? raw[9] ?? 0),
-        overallTier: Number(raw.overallTier ?? raw[10] ?? 0),
-      };
-
-      setOnchainScore(parsed);
-    } catch (err) {
-      console.error(err);
-      setMintError(err.message || "Failed to load onchain score.");
-    } finally {
-      setLoadingOnchain(false);
     }
-  };
+    tryAutoConnect();
+  }, []);
 
-  // --- Onchain: mint Beast NFT via wallet ---
+  // ───────────────────────────────
+  // Загрузка профиля и Beast NFT
+  // ───────────────────────────────
 
-  const handleMintBeast = async () => {
-    setMintError("");
-    setMintTx(null);
-
+  async function loadProfile(address) {
+    if (!address) return;
+    setIsLoadingProfile(true);
+    setError("");
     try {
-      if (!profile) {
-        throw new Error("Load Beast profile first.");
-      }
-
-      const addr = address.trim();
-      if (!addr) {
-        throw new Error("Address is empty.");
-      }
-
-      if (!BEAST_NFT_ADDRESS) {
-        throw new Error("NFT contract address is not configured.");
-      }
-
-      setMinting(true);
-
-      const provider = await getBrowserProvider();
-      const signer = await provider.getSigner();
-
-      const nft = new ethers.Contract(BEAST_NFT_ADDRESS, BEAST_NFT_ABI, signer);
-
-      const tx = await nft.mintFromScore();
-      setMintTx({ hash: tx.hash });
-
-      const receipt = await tx.wait();
-
-      setMintTx({
-        hash: tx.hash,
-        blockNumber: receipt.blockNumber,
-      });
-    } catch (err) {
-      console.error(err);
-      setMintError(err.message || "Failed to mint Beast NFT.");
-    } finally {
-      setMinting(false);
-    }
-  };
-
-  // --- Backend: push live score onchain via oracle ---
-
-  const handlePushOnchain = async () => {
-    setPushError("");
-    setPushResult(null);
-
-    const addr = address.trim();
-    if (!addr) {
-      setPushError("Address is empty.");
-      return;
-    }
-
-    try {
-      setPushingOnchain(true);
-
-      const res = await fetch(
-        `${BACKEND_URL.replace(/\/$/, "")}/api/wallet/${addr}/push-onchain`,
-        { method: "POST" }
-      );
-
+      const res = await fetch(`${API_BASE_URL}/api/wallet/${address}/score`);
       if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`Backend error ${res.status}: ${text.slice(0, 200)}`);
+        throw new Error(`Score request failed: ${res.status}`);
       }
-
-      const json = await res.json();
-      setPushResult(json);
+      const data = await res.json();
+      setProfile(data);
     } catch (err) {
       console.error(err);
-      setPushError(err.message || "Failed to push score onchain.");
+      setError("Failed to load wallet profile.");
     } finally {
-      setPushingOnchain(false);
+      setIsLoadingProfile(false);
     }
-  };
+  }
 
-  // --- Backend: auto-detect Beast NFT + load metadata ---
-
-  const handleLoadBeastSnapshot = async () => {
-    setBeastMetaError("");
-    setBeastNftInfo(null);
-    setBeastMetadata(null);
-
-    const addr = address.trim();
-    if (!addr) {
-      setBeastMetaError("Address is empty.");
-      return;
-    }
-
+  async function loadBeastNft(address) {
+    if (!address) return;
+    setIsLoadingBeast(true);
+    setError("");
     try {
-      setLoadingBeastMeta(true);
-      const base = BACKEND_URL.replace(/\/$/, "");
-
-      // 1) detect Beast NFT for this wallet
-      const nftRes = await fetch(`${base}/api/wallet/${addr}/beast-nft`);
-      if (!nftRes.ok) {
-        const text = await nftRes.text();
-        throw new Error(`Backend error ${nftRes.status}: ${text.slice(0, 200)}`);
+      const res = await fetch(`${API_BASE_URL}/api/wallet/${address}/beast-nft`);
+      if (!res.ok) {
+        throw new Error(`Beast NFT request failed: ${res.status}`);
       }
+      const data = await res.json();
+      setBeastNftInfo(data);
+      setHasBeast(Boolean(data?.hasBeast));
 
-      const nftJson = await nftRes.json();
-      setBeastNftInfo(nftJson);
-
-      if (!nftJson.hasBeast || !nftJson.tokenId) {
-        setBeastMetaError("This wallet has no Base Beast NFT yet.");
-        return;
+      if (data?.hasBeast && data?.tokenId != null) {
+        const metaRes = await fetch(
+          `${API_BASE_URL}/api/beast/${data.tokenId}/metadata`
+        );
+        if (!metaRes.ok) {
+          throw new Error(`Metadata request failed: ${metaRes.status}`);
+        }
+        const meta = await metaRes.json();
+        setBeastMetadata(meta);
+      } else {
+        setBeastMetadata(null);
       }
-
-      // 2) load onchain snapshot metadata
-      const tokenId = nftJson.tokenId;
-      const metaRes = await fetch(`${base}/api/beast/${tokenId}/metadata`);
-      if (!metaRes.ok) {
-        const text = await metaRes.text();
-        throw new Error(`Metadata error ${metaRes.status}: ${text.slice(0, 200)}`);
-      }
-
-      const metaJson = await metaRes.json();
-      setBeastMetadata(metaJson);
     } catch (err) {
       console.error(err);
-      setBeastMetaError(err.message || "Failed to load Beast NFT snapshot.");
+      setError("Failed to load Beast NFT info.");
     } finally {
-      setLoadingBeastMeta(false);
+      setIsLoadingBeast(false);
     }
-  };
+  }
 
-  // --- Derived data for render ---
+  useEffect(() => {
+    if (!walletAddress) return;
+    loadProfile(walletAddress);
+    loadBeastNft(walletAddress);
+  }, [walletAddress]);
 
-  const overall = profile?.scores?.overall;
-  const metrics = profile?.scores?.metrics || {};
-  const tiers = profile?.scores?.tiers || {};
-  const visual = profile?.beast_preview?.visual_traits || {};
-  const userType = profile?.beast_preview?.user_type;
-  const rarity = profile?.beast_preview?.rarity;
+  // ───────────────────────────────
+  // Mint / Update
+  // ───────────────────────────────
 
-  const metricEntries = Object.entries(metrics);
+  async function handleMintFirstBeast() {
+    if (!walletAddress) return;
+    setError("");
+    setIsMinting(true);
+    try {
+      await loadProfile(walletAddress);
+
+      try {
+        const res = await fetch(
+          `${API_BASE_URL}/api/wallet/${walletAddress}/push-onchain`,
+          { method: "POST" }
+        );
+        if (!res.ok) {
+          console.warn("push-onchain failed", res.status);
+        }
+      } catch (err) {
+        console.warn("push-onchain error", err);
+      }
+
+      await loadBeastNft(walletAddress);
+    } catch (err) {
+      console.error(err);
+      setError("Failed to mint Beast.");
+    } finally {
+      setIsMinting(false);
+    }
+  }
+
+  async function handleUpdateBeastAttributes() {
+    if (!walletAddress) return;
+    setError("");
+    setIsMinting(true);
+    try {
+      await loadProfile(walletAddress);
+      if (hasBeast) {
+        await loadBeastNft(walletAddress);
+      }
+    } catch (err) {
+      console.error(err);
+      setError("Failed to update Beast attributes.");
+    } finally {
+      setIsMinting(false);
+    }
+  }
+
+  // ───────────────────────────────
+  // Выбор контента
+  // ───────────────────────────────
+
+  let mainContent = null;
+
+  if (!isConnected) {
+    mainContent = (
+      <NotConnectedSection
+        onConnect={handleConnect}
+        isConnecting={isConnecting}
+      />
+    );
+  } else if (isConnected && !hasBeast) {
+    mainContent = (
+      <MintFirstBeastSection
+        walletAddress={walletAddress}
+        onMint={handleMintFirstBeast}
+        isMinting={isMinting}
+        profile={profile}
+        isLoadingProfile={isLoadingProfile}
+      />
+    );
+  } else {
+    mainContent = (
+      <BeastDashboard
+        walletAddress={walletAddress}
+        profile={profile}
+        beastMetadata={beastMetadata}
+        metricsByKey={metricsByKey}
+        overall={overall}
+        beastInfo={beastInfo}
+        isLoadingProfile={isLoadingProfile}
+        isLoadingBeast={isLoadingBeast}
+        onUpdateAttributes={handleUpdateBeastAttributes}
+        isUpdating={isMinting}
+        visualConfigMap={visualConfigMap}
+      />
+    );
+  }
+
+  // ───────────────────────────────
+  // ГЛАВНАЯ ОБЁРТКА (фикс левого края)
+  // ───────────────────────────────
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
-      <header className="border-b border-slate-800 bg-slate-900/70 backdrop-blur">
-        <div className="max-w-5xl mx-auto px-4 py-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+    <div className="min-h-screen bg-slate-950 text-slate-50">
+      <Header
+        isConnected={isConnected}
+        walletAddress={walletAddress}
+        onConnect={handleConnect}
+        isConnecting={isConnecting}
+      />
+
+      {/* Внешний фон во всю ширину */}
+          <main className="px-6 pb-16 pt-8">
+      {error && (
+        <div className="mb-4 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+          {error}
+        </div>
+      )}
+      {mainContent}
+    </main>
+    </div>
+  );
+}
+
+// ───────────────────────────────
+// Header
+// ───────────────────────────────
+
+function Header({ isConnected, walletAddress, onConnect, isConnecting }) {
+  return (
+    <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4">
+        <div className="flex items-center gap-2">
+          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-500/20 text-xl">
+            🐉
+          </div>
           <div>
-            <h1 className="text-xl md:text-2xl font-bold">
+            <div className="text-sm font-semibold tracking-wide text-slate-100">
               Base Beast Passport
-            </h1>
-            <p className="text-sm text-slate-400">
-              Onchain activity avatar for Base Mainnet.
-            </p>
+            </div>
+            <div className="text-xs text-slate-400">
+              Onchain activity avatar for Base
+            </div>
           </div>
         </div>
-      </header>
 
-      <main className="max-w-5xl mx-auto px-4 py-6 flex flex-col gap-6">
-        {/* Controls */}
-        <section className="bg-slate-900/70 border border-slate-800 rounded-xl p-4 flex flex-col gap-3">
-          <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-3">
-            <div className="flex-1">
-              <label className="block text-xs font-medium text-slate-400 mb-1">
-                Wallet address (Base)
-              </label>
-              <input
-                type="text"
-                value={address}
-                onChange={(e) => setAddress(e.target.value)}
-                className="w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500"
-                placeholder="0x..."
-              />
+        <button
+          onClick={onConnect}
+          disabled={isConnecting}
+          className="rounded-full border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-medium text-slate-100 shadow-sm hover:border-blue-500 hover:bg-slate-900/80 disabled:opacity-60"
+        >
+          {isConnected
+            ? shortAddress(walletAddress)
+            : isConnecting
+            ? "Connecting..."
+            : "Connect"}
+        </button>
+      </div>
+    </header>
+  );
+}
+
+// ───────────────────────────────
+// Landing (стейт 0)
+// ───────────────────────────────
+
+function NotConnectedSection({ onConnect, isConnecting }) {
+  return (
+    <section className="grid gap-10 md:grid-cols-[minmax(0,3fr),minmax(0,2fr)] md:items-center">
+      <div>
+        <div className="inline-flex items-center gap-2 rounded-full border border-blue-500/40 bg-blue-500/10 px-3 py-1 text-[11px] font-medium text-blue-200">
+          <span className="text-sm">🐉</span>
+          <span>Step 1 — Connect your Base wallet</span>
+        </div>
+
+        <h1 className="mt-4 text-3xl font-semibold text-slate-50 md:text-4xl">
+          Summon your Base Beast
+        </h1>
+
+        <p className="mt-3 max-w-xl text-sm text-slate-400 md:text-base">
+          Base Beast Passport turns your onchain activity in the Base network
+          into an RPG-style avatar. Your Beast&apos;s body and equipment are
+          fully driven by real metrics: transactions, DeFi, NFTs, building and
+          social reputation.
+        </p>
+
+        <div className="mt-4 space-y-2 text-sm text-slate-300">
+          <StepLabel
+            index={1}
+            text="Connect your wallet on Base — we’ll fetch your live onchain profile."
+          />
+          <StepLabel
+            index={2}
+            text="Mint your first Regular Beast with a Proto Beast body."
+          />
+          <StepLabel
+            index={3}
+            text="Grow your Beast as you trade, provide liquidity, mint NFTs and build on Base."
+          />
+        </div>
+
+        <div className="mt-6 flex flex-wrap items-center gap-4">
+          <button
+            onClick={onConnect}
+            disabled={isConnecting}
+            className="rounded-full bg-blue-500 px-6 py-2.5 text-sm font-semibold text-white shadow hover:bg-blue-400 disabled:opacity-60"
+          >
+            {isConnecting ? "Connecting..." : "Connect wallet & start"}
+          </button>
+
+          <div className="flex flex-col text-[11px] text-slate-500">
+            <span>Network: Base (EVM)</span>
+            <span>No gas required to preview your Beast.</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 md:mt-0">
+        <div className="rounded-2xl border border-slate-800 bg-gradient-to-br from-slate-900/80 via-slate-900/40 to-blue-950/60 p-4">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <div className="text-xs uppercase tracking-wide text-slate-500">
+                Beast preview
+              </div>
+              <div className="text-sm font-semibold text-slate-50">
+                Onchain profile → avatar
+              </div>
             </div>
-
-            <div className="flex flex-row gap-2 mt-2 md:mt-6">
-              <button
-                onClick={handleUseConnectedWallet}
-                className="flex-1 md:flex-none px-3 py-2 rounded-lg border border-slate-700 text-xs md:text-sm hover:bg-slate-800 transition"
-              >
-                Use connected wallet
-              </button>
-              <button
-                onClick={handleLoadProfile}
-                disabled={loading}
-                className="flex-1 md:flex-none px-4 py-2 rounded-lg bg-sky-500 text-xs md:text-sm font-semibold hover:bg-sky-400 disabled:opacity-60 disabled:hover:bg-sky-500 transition"
-              >
-                {loading ? "Loading..." : "Load Beast Profile"}
-              </button>
+            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-900/80 text-xl">
+              🐉
             </div>
           </div>
 
-          {error && (
-            <div className="mt-2 text-xs text-red-400 bg-red-950/40 border border-red-800 rounded-md px-3 py-2">
-              {error}
+          <p className="mt-3 text-[11px] text-slate-400">Every wallet gets:</p>
+
+          <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+            <Tag>Beast Score (0–100)</Tag>
+            <Tag>Activity &amp; Tx tiers</Tag>
+            <Tag>DeFi &amp; liquidity</Tag>
+            <Tag>NFTs &amp; builder score</Tag>
+            <Tag>Social &amp; Coinbase KYC</Tag>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function StepLabel({ index, text }) {
+  return (
+    <div className="flex items-start gap-2">
+      <span className="mt-[3px] h-4 w-4 rounded-full bg-blue-500/80 text-center text-[10px]">
+        {index}
+      </span>
+      <p>{text}</p>
+    </div>
+  );
+}
+
+function Tag({ children }) {
+  return (
+    <span className="rounded-full bg-slate-900/80 px-2 py-1 text-slate-200">
+      {children}
+    </span>
+  );
+}
+
+// ───────────────────────────────
+// Стейт 1 — кошелёк подключён, Beast ещё нет
+// ───────────────────────────────
+
+function MintFirstBeastSection({
+  walletAddress,
+  onMint,
+  isMinting,
+  profile,
+  isLoadingProfile,
+}) {
+  const overall = profile?.scores?.overall;
+  const beastInfo = profile?.beast_preview;
+
+  return (
+    <section className="grid gap-8 md:grid-cols-2 md:items-center">
+      <div>
+        <div className="inline-flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/70 px-3 py-1 text-[11px] font-medium text-slate-300">
+          <span className="text-sm">✨</span>
+          <span>Step 2 — Mint your first Beast</span>
+        </div>
+
+        <h1 className="mt-4 text-2xl font-semibold text-slate-50 md:text-3xl">
+          Roll your first Regular Beast
+        </h1>
+        <p className="mt-3 text-sm text-slate-400 md:text-base">
+          Your first Beast starts as a Regular Beast with a Proto Beast body
+          (Size T2, Muscles T2). Later, as your onchain footprint grows, we’ll
+          evolve every part of its body and equipment.
+        </p>
+
+        <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/40 p-4 text-xs text-slate-300">
+          <div className="flex items-center justify-between">
+            <span className="text-slate-400">Connected wallet</span>
+            <span className="font-mono text-slate-100">
+              {shortAddress(walletAddress)}
+            </span>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-3 text-xs">
+            <Tag>Beast Type: Regular (default)</Tag>
+            <Tag>Size: T2 – Proto Beast</Tag>
+            <Tag>Muscles: T2 – Onchain Lifter</Tag>
+          </div>
+
+          {overall && (
+            <div className="mt-3 border-t border-slate-800 pt-3 text-xs">
+              <div className="flex flex-wrap gap-3">
+                <Tag>
+                  Beast Score:{" "}
+                  <span className="font-semibold">{overall.score}</span>/100
+                </Tag>
+                <Tag>
+                  Overall Tier:{" "}
+                  <span className="font-semibold">
+                    T{overall.tier} – {overall.label}
+                  </span>
+                </Tag>
+                {beastInfo?.rarity && (
+                  <Tag>
+                    Rarity:{" "}
+                    <span className="font-semibold">{beastInfo.rarity}</span>
+                  </Tag>
+                )}
+              </div>
             </div>
           )}
-        </section>
 
-        {/* Live Overview + Visual */}
-        {profile && (
-          <section className="grid gap-4 md:grid-cols-[2fr,3fr]">
-            {/* Live Beast Overview */}
-            <div className="bg-slate-900/70 border border-slate-800 rounded-xl p-4 flex flex-col gap-3">
-              <div className="flex items-center justify-between gap-2">
-                <h2 className="text-sm font-semibold text-slate-200">
-                  Live Beast Overview
-                </h2>
-                <span className="text-[11px] text-slate-400">
-                  Network: {profile.network}
-                </span>
-              </div>
-
-              <div className="flex items-baseline gap-3">
-                <span className="text-4xl font-bold text-sky-400">
-                  {overall?.score ?? 0}
-                </span>
-                <div className="flex flex-col">
-                  <span className="text-xs uppercase tracking-wide text-slate-400">
-                    Beast Score / 100
-                  </span>
-                  <span className="text-sm text-slate-300">
-                    {overall?.label || "Newcomer"}
-                  </span>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div className="bg-slate-950/60 rounded-lg border border-slate-800 px-3 py-2">
-                  <div className="text-[11px] uppercase tracking-wide text-slate-500">
-                    Overall Tier
-                  </div>
-                  <div className="text-lg font-semibold">
-                    {overall?.tier ?? 0} / 5
-                  </div>
-                </div>
-                <div className="bg-slate-950/60 rounded-lg border border-slate-800 px-3 py-2">
-                  <div className="text-[11px] uppercase tracking-wide text-slate-500">
-                    Rarity / Type
-                  </div>
-                  <div className="text-sm">
-                    {rarity || "Common"} · {userType || "User"}
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-2 text-[11px] text-slate-400">
-                Address:{" "}
-                <span className="font-mono text-slate-300 break-all">
-                  {profile.address}
-                </span>
-              </div>
-              <div className="text-[11px] text-slate-500">
-                Updated at: {profile.updated_at}
-              </div>
+          {isLoadingProfile && (
+            <div className="mt-2 text-xs text-slate-500">
+              Loading live profile…
             </div>
+          )}
+        </div>
 
-            {/* Visual traits (Live) */}
-            <div className="bg-slate-900/70 border border-slate-800 rounded-xl p-4 flex flex-col gap-3">
-              <div className="flex items-center justify-between gap-2">
-                <h2 className="text-sm font-semibold text-slate-200">
-                  Beast Visual Traits (Live)
-                </h2>
-                <span className="text-[11px] text-slate-500">
-                  Visual preview (icons / spin)
-                </span>
+        <button
+          onClick={onMint}
+          disabled={isMinting}
+          className="mt-6 rounded-full bg-blue-500 px-6 py-2.5 text-sm font-semibold text-white shadow hover:bg-blue-400 disabled:opacity-60"
+        >
+          {isMinting ? "Minting..." : "Mint your first Beast"}
+        </button>
+      </div>
+
+      <div className="flex items-center justify-center">
+        <div className="flex h-64 w-64 items-center justify-center rounded-3xl border border-dashed border-slate-700 bg-slate-900/40">
+          <div className="flex flex-col items-center text-slate-500">
+            <span className="text-4xl">🐉</span>
+            <span className="mt-2 text-xs">
+              Your first Beast will appear here
+            </span>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ───────────────────────────────
+// Стейт 2 — дашборд зверя
+// ───────────────────────────────
+
+function BeastDashboard({
+  walletAddress,
+  profile,
+  beastMetadata,
+  metricsByKey,
+  overall,
+  beastInfo,
+  isLoadingProfile,
+  isLoadingBeast,
+  onUpdateAttributes,
+  isUpdating,
+  visualConfigMap,
+}) {
+  const bodyMedia = getBeastBodyMedia();
+  const [isBodyPlaying, setIsBodyPlaying] = useState(false);
+
+  const earring = metricsByKey["coinbase_verified"];
+  const helmet = metricsByKey["social"];
+  const armor = metricsByKey["builder"];
+  const neck = metricsByKey["nft_mints"];
+  const weapon = metricsByKey["defi_swaps"];
+  const shield = metricsByKey["liquidity_yield"];
+  const ring = metricsByKey["gas_spent"];
+  const boots = metricsByKey["defi_volume"];
+  const isVerified = earring?.tier === 5;
+
+  const hasImage = Boolean(bodyMedia?.image);
+  const hasVideo = Boolean(bodyMedia?.video);
+
+  return (
+    <section className="space-y-6">
+      <BeastOverview
+        walletAddress={walletAddress}
+        overall={overall}
+        beastInfo={beastInfo}
+        profile={profile}
+        beastMetadata={beastMetadata}
+      />
+
+      <div className="mt-2">
+        <h3 className="text-sm font-semibold text-slate-100">
+          Beast Body &amp; Equipment
+        </h3>
+        <p className="mt-1 text-[11px] text-slate-400">
+          Your Beast&apos;s body and gear fully reflect your live onchain
+          activity in Base.
+        </p>
+      </div>
+
+      {/* Основная трёхколоночная область */}
+      <div className="mt-4 flex flex-col gap-6 lg:flex-row lg:items-start">
+        {/* Левая колонка со слотами */}
+        <div className="flex-1 space-y-3">
+          <EquipmentCard
+            slotKey="earring"
+            title="Beast Earring"
+            metric={earring}
+            statusLabel="Earring status"
+            description="Coinbase / KYC verification."
+            visualConfigMap={visualConfigMap}
+          />
+          <EquipmentCard
+            slotKey="helmet"
+            title="Beast Helmet"
+            metric={helmet}
+            statusLabel="Helmet status"
+            description="Social / reputation signals."
+            visualConfigMap={visualConfigMap}
+          />
+          <EquipmentCard
+            slotKey="armor"
+            title="Beast Armor"
+            metric={armor}
+            statusLabel="Armor status"
+            description="Builder / creator score."
+            visualConfigMap={visualConfigMap}
+          />
+          <EquipmentCard
+            slotKey="neck_medallion"
+            title="Neck Medallion"
+            metric={neck}
+            statusLabel="Neck Medallion status"
+            description="NFT mints and collection activity."
+            visualConfigMap={visualConfigMap}
+          />
+        </div>
+
+        {/* Центр: Beast Body + окно зверя 480x480 */}
+        <div className="flex-[1.2] flex flex-col items-center gap-4">
+          <div className="w-full max-w-sm">
+            <BeastBodySection metricsByKey={metricsByKey} />
+          </div>
+
+          <div className="w-full flex justify-center">
+            {!hasImage ? (
+              <div className="flex flex-col items-center">
+                <div className="relative h-[480px] w-[480px] max-w-full overflow-hidden rounded-3xl border border-slate-800 bg-slate-900/40 flex items-center justify-center">
+                  <span className="text-5xl">🐉</span>
+                </div>
+                <div className="mt-1 text-center text-[11px] text-slate-500">
+                  Beast artwork placeholder
+                </div>
               </div>
+            ) : (
+              <div className="flex flex-col items-center">
+                <div className="group relative h-[480px] w-[480px] max-w-full overflow-hidden rounded-3xl border border-slate-800 bg-slate-950/80 p-1">
+                  <div className="relative h-full w-full overflow-hidden rounded-2xl bg-black">
+                    {isBodyPlaying && hasVideo ? (
+                      <video
+                        key="beast-video"
+                        src={bodyMedia.video}
+                        autoPlay
+                        loop
+                        muted
+                        playsInline
+                        style={{
+                          width: "100%",
+                          height: "100%",
+                          objectFit: "contain",
+                          display: "block",
+                        }}
+                      />
+                    ) : (
+                      <img
+                        src={bodyMedia.image}
+                        alt="Base Beast Body"
+                        style={{
+                          width: "100%",
+                          height: "100%",
+                          objectFit: "contain",
+                          display: "block",
+                        }}
+                        onError={(e) => {
+                          e.currentTarget.style.display = "none";
+                        }}
+                      />
+                    )}
 
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                {Object.entries(visual).map(([key, trait]) => {
-                  const cfg = visualConfigMap[key] || {};
-                  const displayName = cfg.display_name || key;
-                  const tierNum = trait.tier ?? 0;
-                  const tierKey = String(tierNum);
-                  const tierCfg =
-                    (cfg.tiers && cfg.tiers[tierKey]) || null;
-                  const iconKey = tierCfg?.icon_key;
-                  const iconPath = getTraitIconPath(key, tierNum, iconKey);
-                  const spinPath = getTraitSpinPath(key, tierNum, iconKey);
-
-                  return (
-                    <div
-                      key={key}
-                      className="bg-slate-950/60 rounded-lg border border-slate-800 px-3 py-2 flex flex-col gap-1"
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold text-slate-200">
-                          {displayName}
-                        </span>
-                        <span className="text-[11px] text-slate-400">
-                          Tier {tierNum}/5
-                        </span>
-                      </div>
-
-                      {(iconPath || spinPath) && (
-                        <div className="mt-1 flex justify-center">
-                          <div className="relative h-16 w-16">
-                            {iconPath && (
-                              <img
-                                src={iconPath}
-                                alt={tierCfg?.name || displayName}
-                                className="h-16 w-16 object-contain drop-shadow"
-                                onError={(e) => {
-                                  e.currentTarget.style.display = "none";
-                                }}
-                              />
-                            )}
-                            {spinPath && (
-                              <video
-                                src={spinPath}
-                                autoPlay
-                                loop
-                                muted
-                                playsInline
-                                className="absolute inset-0 h-16 w-16 object-contain drop-shadow"
-                                onError={(e) => {
-                                  e.currentTarget.style.display = "none";
-                                }}
-                              />
-                            )}
-                          </div>
+                    {/* PLAY поверх PNG */}
+                    {!isBodyPlaying && hasVideo && (
+                      <button
+                        type="button"
+                        onClick={() => setIsBodyPlaying(true)}
+                        className="absolute inset-0 flex items-center justify-center bg-black/10 text-white transition-colors hover:bg-black/35"
+                      >
+                        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-black/80 text-[11px] font-semibold text-slate-50 shadow-lg">
+                          ▶
                         </div>
-                      )}
+                      </button>
+                    )}
 
-                      {iconKey && (
-                        <div className="text-[10px] text-slate-500">
-                          Visual ID: {iconKey}
-                        </div>
-                      )}
-
-                      <div className="text-[11px] text-sky-300">
-                        {trait.label}
-                      </div>
-                      <div className="text-[11px] text-slate-400">
-                        {trait.description}
-                      </div>
-                      <div className="text-[10px] text-slate-500 mt-1">
-                        Metric: {trait.source_metric}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </section>
-        )}
-
-        {/* Metrics table (Live) */}
-        {profile && metricEntries.length > 0 && (
-          <section className="bg-slate-900/70 border border-slate-800 rounded-xl p-4">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-semibold text-slate-200">
-                Metrics Breakdown (Live)
-              </h2>
-              <span className="text-[11px] text-slate-500">
-                All metrics in tiers 0–5
-              </span>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-xs border-collapse">
-                <thead>
-                  <tr className="bg-slate-950/80 border-b border-slate-800">
-                    <th className="text-left px-2 py-2 font-medium text-slate-400">
-                      key
-                    </th>
-                    <th className="text-left px-2 py-2 font-medium text-slate-400">
-                      label
-                    </th>
-                    <th className="text-left px-2 py-2 font-medium text-slate-400">
-                      category
-                    </th>
-                    <th className="text-right px-2 py-2 font-medium text-slate-400">
-                      raw
-                    </th>
-                    <th className="text-right px-2 py-2 font-medium text-slate-400">
-                      tier
-                    </th>
-                    <th className="text-left px-2 py-2 font-medium text-slate-400">
-                      tier label
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {metricEntries.map(([key, m]) => (
-                    <tr
-                      key={key}
-                      className="border-b border-slate-800/70 hover:bg-slate-900/70"
-                    >
-                      <td className="px-2 py-1 font-mono text-[11px] text-slate-400">
-                        {key}
-                      </td>
-                      <td className="px-2 py-1 text-slate-100">
-                        {m.label}
-                      </td>
-                      <td className="px-2 py-1 text-slate-400">
-                        {m.category}
-                      </td>
-                      <td className="px-2 py-1 text-right text-slate-200">
-                        {typeof m.raw_value === "number"
-                          ? m.raw_value.toFixed(4).replace(/\.?0+$/, "")
-                          : m.raw_value}
-                      </td>
-                      <td className="px-2 py-1 text-right text-slate-200">
-                        {m.tier}
-                      </td>
-                      <td className="px-2 py-1 text-slate-300">
-                        {m.tier_label}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        )}
-
-        {/* Onchain registry + Mint + Push */}
-        {profile && (
-          <section className="bg-slate-900/70 border border-slate-800 rounded-xl p-4 flex flex-col gap-3">
-            <div className="flex items-center justify-between gap-2 mb-1">
-              <h2 className="text-sm font-semibold text-slate-200">
-                Onchain registry & mint
-              </h2>
-              <span className="text-[11px] text-slate-500">
-                Base Mainnet · NFT: {BEAST_NFT_ADDRESS.slice(0, 6)}…
-                {BEAST_NFT_ADDRESS.slice(-4)}
-              </span>
-            </div>
-
-            <div className="flex flex-wrap gap-2 mb-1">
-              <button
-                onClick={handleLoadOnchainScore}
-                disabled={loadingOnchain || minting || pushingOnchain}
-                className="px-3 py-2 rounded-lg border border-slate-700 text-xs hover:bg-slate-800 disabled:opacity-60"
-              >
-                {loadingOnchain
-                  ? "Loading onchain score..."
-                  : "Load onchain score"}
-              </button>
-              <button
-                onClick={handleMintBeast}
-                disabled={minting}
-                className="px-4 py-2 rounded-lg bg-emerald-500 text-xs font-semibold hover:bg-emerald-400 disabled:opacity-60"
-              >
-                {minting ? "Minting Beast..." : "Mint Beast NFT"}
-              </button>
-              <button
-                onClick={handlePushOnchain}
-                disabled={pushingOnchain}
-                className="px-4 py-2 rounded-lg bg-indigo-500 text-xs font-semibold hover:bg-indigo-400 disabled:opacity-60"
-              >
-                {pushingOnchain
-                  ? "Pushing live score..."
-                  : "Push live score onchain"}
-              </button>
-            </div>
-
-            {onchainScore && (
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs mt-1">
-                {Object.entries(onchainScore).map(([key, value]) => (
-                  <div
-                    key={key}
-                    className="bg-slate-950/60 rounded-lg border border-slate-800 px-3 py-2"
-                  >
-                    <div className="text-[11px] text-slate-500 mb-1">
-                      {key}
-                    </div>
-                    <div className="text-sm text-slate-200 font-semibold">
-                      {value}
-                    </div>
+                    {/* ✕ поверх VIDEO */}
+                    {isBodyPlaying && hasVideo && (
+                      <button
+                        type="button"
+                        onClick={() => setIsBodyPlaying(false)}
+                        className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-full border border-slate-700 bg-black/80 text-xs font-semibold text-slate-100 hover:bg-black"
+                      >
+                        ✕
+                      </button>
+                    )}
                   </div>
-                ))}
-              </div>
-            )}
+                </div>
 
-            {mintTx && (
-              <div className="mt-2 text-[11px] text-emerald-300">
-                ✅ Mint transaction sent.
-                <br />
-                Tx hash:{" "}
-                <a
-                  href={`https://basescan.org/tx/${mintTx.hash}`}
-                  className="underline break-all"
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {mintTx.hash}
-                </a>
-                {mintTx.blockNumber && (
-                  <>
-                    <br />
-                    Included in block: {mintTx.blockNumber}
-                  </>
+                {hasVideo && (
+                  <div className="mt-1 text-center text-[11px] text-slate-500">
+                    {isBodyPlaying
+                      ? "Tap ✕ to stop animation"
+                      : "Click to play animation"}
+                  </div>
                 )}
               </div>
             )}
+          </div>
 
-            {pushResult && (
-              <div className="mt-2 text-[11px] text-indigo-300">
-                ✅ Live score pushed onchain.
-                <br />
-                Tx hash:{" "}
-                <a
-                  href={`https://basescan.org/tx/${pushResult.txHash}`}
-                  className="underline break-all"
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {pushResult.txHash}
-                </a>
-                {pushResult.blockNumber && (
-                  <>
-                    <br />
-                    Included in block: {pushResult.blockNumber}
-                  </>
-                )}
-              </div>
-            )}
-
-            {(mintError || pushError) && (
-              <div className="mt-2 text-[11px] text-red-400 bg-red-950/40 border border-red-800 rounded-md px-3 py-2">
-                {mintError || pushError}
-              </div>
-            )}
-          </section>
-        )}
-
-        {/* Onchain Beast NFT snapshot */}
-        {profile && (
-          <section className="bg-slate-900/70 border border-slate-800 rounded-xl p-4 flex flex-col gap-3">
-            <div className="flex items-center justify-between gap-2 mb-1">
-              <h2 className="text-sm font-semibold text-slate-200">
-                Onchain Beast NFT snapshot
-              </h2>
-            </div>
-
+          <div className="mt-1 flex flex-col items-center gap-1">
             <button
-              onClick={handleLoadBeastSnapshot}
-              disabled={loadingBeastMeta}
-              className="px-3 py-2 rounded-lg border border-slate-700 text-xs hover:bg-slate-800 disabled:opacity-60 w-fit"
+              onClick={onUpdateAttributes}
+              disabled={isUpdating}
+              className="rounded-full bg-blue-500 px-6 py-2.5 text-sm font-semibold text-white shadow hover:bg-blue-400 disabled:opacity-60"
             >
-              {loadingBeastMeta
-                ? "Loading Beast NFT..."
-                : "Load Beast NFT snapshot"}
+              {isUpdating
+                ? "Updating attributes..."
+                : "Mint / Update your Beast Attributes"}
             </button>
 
-            {beastNftInfo && (
-              <div className="text-[11px] text-slate-300 mt-1">
-                {beastNftInfo.hasBeast ? (
-                  <>
-                    <div className="text-slate-400 mb-1">
-                      Detected Beast NFT for this wallet:
+            {(isLoadingProfile || isLoadingBeast) && (
+              <div className="text-xs text-slate-500">
+                Refreshing data from backend…
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Правая колонка со слотами */}
+        <div className="flex-1 space-y-3">
+          <EquipmentCard
+            slotKey="weapon"
+            title="Beast Weapon"
+            metric={weapon}
+            statusLabel="Weapon status"
+            description="DeFi swaps and trading."
+            visualConfigMap={visualConfigMap}
+          />
+          <EquipmentCard
+            slotKey="shield"
+            title="Beast Shield"
+            metric={shield}
+            statusLabel="Shield status"
+            description="Liquidity over time."
+            visualConfigMap={visualConfigMap}
+          />
+          <EquipmentCard
+            slotKey="ring"
+            title="Beast Ring"
+            metric={ring}
+            statusLabel="Ring status"
+            description="Gas spent on Base."
+            visualConfigMap={visualConfigMap}
+          />
+          <EquipmentCard
+            slotKey="boots"
+            title="Beast Boots"
+            metric={boots}
+            statusLabel="Boots status"
+            description="DeFi volume across Base."
+            visualConfigMap={visualConfigMap}
+          />
+        </div>
+      </div>
+
+      {/* Сводка чисел снизу */}
+      <div className="space-y-2">
+        <RowInfoLines
+          lines={[
+            `Verified Beast – ${isVerified ? "Yes" : "No"}`,
+            helmet ? `Social Score – ${helmet.raw_value}` : "Social Score – –",
+          ]}
+        />
+        <RowInfoLines
+          lines={[
+            armor ? `Builder Score – ${armor.raw_value}` : "Builder Score – –",
+            neck ? `NFT Mints – ${neck.raw_value}` : "NFT Mints – –",
+          ]}
+        />
+        <RowInfoLines
+          lines={[
+            weapon ? `DeFi Swaps – ${weapon.raw_value}` : "DeFi Swaps – –",
+            shield
+              ? `Liquidity – ${shield.raw_value} ($*days snapshot)`
+              : "Liquidity – –",
+          ]}
+        />
+        <RowInfoLines
+          lines={[
+            ring
+              ? `Gas spent – ${ring.raw_value} (native units)`
+              : "Gas spent – –",
+            boots
+              ? `DeFi Volume – ${boots.raw_value} ($)`
+              : "DeFi Volume – –",
+          ]}
+        />
+      </div>
+    </section>
+  );
+}
+
+function BeastOverview({
+  walletAddress,
+  overall,
+  beastInfo,
+  profile,
+  beastMetadata,
+}) {
+  const beastName =
+    beastMetadata?.name || beastInfo?.name || shortAddress(walletAddress);
+  const userType = beastInfo?.user_type || "-";
+  const rarity = beastInfo?.rarity || "-";
+  const updatedAt = profile?.updated_at;
+
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="inline-flex items-center gap-2 rounded-full bg-slate-900/90 px-2 py-1 text-[10px] uppercase tracking-wide text-slate-500">
+            <span className="h-1.5 w-1.5 rounded-full bg-green-400" />
+            <span>Your Beast dashboard</span>
+          </div>
+          <h2 className="mt-2 text-xl font-semibold text-slate-50">
+            {beastName}
+          </h2>
+          <div className="mt-2 flex flex-wrap gap-2 text-xs">
+            <span className="rounded-full bg-slate-800/80 px-2 py-1 text-slate-200">
+              User Type: <span className="font-semibold">{userType}</span>
+            </span>
+            <span className="rounded-full bg-slate-800/80 px-2 py-1 text-slate-200">
+              Rarity: <span className="font-semibold">{rarity}</span>
+            </span>
+          </div>
+        </div>
+
+        {overall && (
+          <div className="text-right">
+            <div className="text-xs uppercase tracking-wide text-slate-500">
+              Beast Score
+            </div>
+            <div className="text-2xl font-bold text-slate-50">
+              {overall.score}
+              <span className="text-base text-slate-400"> / 100</span>
+            </div>
+            <div className="mt-1 text-xs text-slate-300">
+              Tier T{overall.tier} – {overall.label}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+        <div>
+          <span className="text-slate-400">Wallet: </span>
+          <span className="font-mono text-slate-300">
+            {shortAddress(walletAddress)}
+          </span>
+        </div>
+        {updatedAt && (
+          <div>
+            <span className="text-slate-400">Last updated: </span>
+            <span className="text-slate-300">{updatedAt}</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BeastBodySection({ metricsByKey }) {
+  const activity = metricsByKey["activity_days"];
+  const txCount = metricsByKey["tx_count"];
+
+  const sizeStatus = activity?.tier_label || "Unknown";
+  const musclesStatus = txCount?.tier_label || "Unknown";
+
+  return (
+    <div className="mx-auto w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-900/40 p-4 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-slate-100">Beast Body</h3>
+        <span className="text-[11px] uppercase tracking-wide text-slate-500">
+          Activity Days &amp; Tx Count
+        </span>
+      </div>
+
+      <p className="mt-2 text-[11px] text-slate-400">
+        Your body size and muscles evolve from your activity days and total
+        transactions in Base.
+      </p>
+
+      <div className="mt-3 grid gap-3 md:grid-cols-2">
+        <div className="rounded-xl bg-slate-900/70 p-3">
+          <div className="text-[11px] uppercase tracking-wide text-slate-500">
+            Size
+          </div>
+          <div className="mt-1 text-sm font-semibold text-slate-100">
+            {sizeStatus}
+          </div>
+          <div className="mt-1 text-[11px] text-slate-400">
+            Activity Days –{" "}
+            <span className="font-mono text-slate-200">
+              {activity?.raw_value ?? "–"}
+            </span>
+          </div>
+        </div>
+
+        <div className="rounded-xl bg-slate-900/70 p-3">
+          <div className="text-[11px] uppercase tracking-wide text-slate-500">
+            Muscles
+          </div>
+          <div className="mt-1 text-sm font-semibold text-slate-100">
+            {musclesStatus}
+          </div>
+          <div className="mt-1 text-[11px] text-slate-400">
+            Tx Count –{" "}
+            <span className="font-mono text-slate-200">
+              {txCount?.raw_value ?? "–"}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ───────────────────────────────
+// Equipment
+// ───────────────────────────────
+
+const SLOT_EMOJI = {
+  earring: "💎",
+  helmet: "🪖",
+  armor: "🦺",
+  neck_medallion: "🏅",
+  weapon: "🗡️",
+  shield: "🛡️",
+  ring: "💍",
+  boots: "👢",
+};
+
+function EquipmentCard({
+  slotKey,
+  title,
+  metric,
+  statusLabel,
+  description,
+  visualConfigMap,
+}) {
+  const cfg = visualConfigMap?.[slotKey] || {};
+  const tier = typeof metric?.tier === "number" ? metric.tier : 0;
+  const tierNum = tier;
+  const tierKey = String(tierNum);
+  const tierCfg = cfg.tiers ? cfg.tiers[tierKey] : null;
+  const iconKey = tierCfg?.icon_key || null;
+
+  // основная иконка и анимация для текущего tier
+  const iconPath =
+    iconKey && tierNum > 0 ? getTraitIconPath(slotKey, tierNum, iconKey) : null;
+  const spinPath =
+    iconKey && tierNum > 0 ? getTraitSpinPath(slotKey, tierNum, iconKey) : null;
+
+  const tierLabel = metric?.tier_label || tierCfg?.name || "Unknown";
+  const slotEmoji = SLOT_EMOJI[slotKey] || "⚙️";
+
+  const hasIcon = Boolean(iconPath);
+  const hasSpin = Boolean(spinPath);
+
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isGalleryOpen, setIsGalleryOpen] = useState(false);
+
+  const boxSize = 170;
+  const hasTierConfig = cfg.tiers && Object.keys(cfg.tiers).length > 0;
+
+  return (
+    <div className="w-full max-w-[320px] rounded-2xl border border-slate-800 bg-slate-900/40 p-3 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-slate-800/80 text-base">
+            {slotEmoji}
+          </div>
+          <div>
+            <div className="text-[13px] font-semibold text-slate-100">
+              {title}
+            </div>
+            <div className="text-[11px] text-slate-500">{description}</div>
+          </div>
+        </div>
+        {typeof tier === "number" && (
+          <div className="text-right text-[11px] text-slate-400">
+            <div className="font-mono text-slate-200">T{tier}</div>
+            <div className="text-[10px] text-slate-500">tier</div>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-2 text-[11px] text-slate-300">
+        {statusLabel} –{" "}
+        <span className="font-semibold text-slate-100">{tierLabel}</span>
+      </div>
+
+      <div className="mt-2 rounded-xl bg-slate-900/80 p-2 text-[11px] text-slate-500">
+        <div className="text-[10px] uppercase tracking-wide text-slate-500">
+          Visual slot
+        </div>
+
+        {hasIcon || hasSpin ? (
+          <>
+            <div className="mt-2 flex justify-center">
+              <div
+                style={{
+                  width: boxSize,
+                  height: boxSize,
+                  borderRadius: 16,
+                  overflow: "hidden",
+                  background:
+                    "radial-gradient(circle at 30% 20%, rgba(96,165,250,0.25), transparent 60%)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  position: "relative",
+                }}
+              >
+                {isPlaying && hasSpin ? (
+                  <video
+                    key={`${slotKey}-spin`}
+                    src={spinPath}
+                    autoPlay
+                    loop
+                    muted
+                    playsInline
+                    style={{
+                      width: "80%",
+                      height: "80%",
+                      objectFit: "contain",
+                      display: "block",
+                    }}
+                    onError={(e) => {
+                      e.currentTarget.style.display = "none";
+                      setIsPlaying(false);
+                    }}
+                  />
+                ) : hasIcon ? (
+                  <img
+                    src={iconPath}
+                    alt={tierCfg?.name || title}
+                    style={{
+                      maxWidth: "80%",
+                      maxHeight: "80%",
+                      objectFit: "contain",
+                      display: "block",
+                      cursor: hasSpin ? "pointer" : "default",
+                    }}
+                    onClick={() => {
+                      if (hasSpin) setIsPlaying(true);
+                    }}
+                    onError={(e) => {
+                      e.currentTarget.style.display = "none";
+                    }}
+                  />
+                ) : null}
+
+                {!isPlaying && hasSpin && (
+                  <button
+                    type="button"
+                    onClick={() => setIsPlaying(true)}
+                    className="absolute inset-0 flex items-center justify-center bg-black/10 text-white transition-colors hover:bg-black/30"
+                  >
+                    <div className="flex h-7 w-7 items-center justify-center rounded-full bg-black/80 text-[10px] font-semibold text-slate-50 shadow-lg">
+                      ▶
                     </div>
-                    <div>
-                      Contract:{" "}
-                      <span className="font-mono break-all">
-                        {beastNftInfo.contract}
-                      </span>
-                    </div>
-                    <div>
-                      Token ID:{" "}
-                      <span className="font-mono">
-                        {beastNftInfo.tokenId}
-                      </span>
-                    </div>
-                  </>
-                ) : (
-                  <div className="text-slate-400">
-                    This wallet does not own a Base Beast NFT yet.
-                  </div>
+                  </button>
+                )}
+
+                {isPlaying && hasSpin && (
+                  <button
+                    type="button"
+                    onClick={() => setIsPlaying(false)}
+                    className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full border border-slate-700 bg-black/80 text-[10px] font-semibold text-slate-100 hover:bg-black"
+                  >
+                    ✕
+                  </button>
                 )}
               </div>
-            )}
+            </div>
 
-            {beastMetadata && (
-              <div className="mt-3 text-xs">
-                <div className="mb-2">
-                  <div className="text-sm font-semibold text-slate-100">
-                    {beastMetadata.name}
-                  </div>
-                  {beastMetadata.description && (
-                    <div className="text-[11px] text-slate-400 mt-1">
-                      {beastMetadata.description}
-                    </div>
-                  )}
-                </div>
-
-                {beastMetadata.external_url && (
-                  <div className="mb-2 text-[11px] text-slate-500">
-                    external_url:{" "}
-                    <a
-                      href={beastMetadata.external_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="underline"
-                    >
-                      {beastMetadata.external_url}
-                    </a>
-                  </div>
-                )}
-
-                <div className="mt-2">
-                  <div className="text-[11px] text-slate-400 mb-1">
-                    Attributes (snapshot)
-                  </div>
-                  <div className="overflow-x-auto">
-                    <table className="min-w-full text-[11px] border-collapse">
-                      <thead>
-                        <tr className="border-b border-slate-800">
-                          <th className="text-left px-2 py-1 text-slate-400 font-medium">
-                            trait
-                          </th>
-                          <th className="text-left px-2 py-1 text-slate-400 font-medium">
-                            value
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(beastMetadata.attributes || []).map(
-                          (attr, idx) => (
-                            <tr
-                              key={idx}
-                              className="border-b border-slate-800/70 hover:bg-slate-900/70"
-                            >
-                              <td className="px-2 py-1 text-slate-300">
-                                {attr.trait_type}
-                              </td>
-                              <td className="px-2 py-1 text-slate-100">
-                                {attr.value}
-                              </td>
-                            </tr>
-                          )
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
+            {hasSpin && (
+              <div className="mt-1 text-center text-[10px] text-slate-500">
+                {isPlaying
+                  ? "Tap ✕ to stop animation"
+                  : "Click image or ▶ to play animation"}
               </div>
             )}
+          </>
+        ) : (
+          <div className="mt-1 text-[11px] text-slate-400">
+            Item visuals will appear here in the next step.
+          </div>
+        )}
 
-            {beastMetaError && (
-              <div className="mt-2 text-[11px] text-red-400 bg-red-950/40 border border-red-800 rounded-md px-3 py-2">
-                {beastMetaError}
+        {hasTierConfig && (
+          <div className="mt-3 border-t border-slate-800 pt-2">
+            <button
+              type="button"
+              onClick={() => setIsGalleryOpen((v) => !v)}
+              className="flex items-center gap-1 text-[10px] font-medium text-slate-300 hover:text-blue-300"
+            >
+              <span>{isGalleryOpen ? "▼" : "▶"}</span>
+              <span>Tier gallery (T1–T5)</span>
+            </button>
+
+            {isGalleryOpen && (
+              <div className="mt-2 grid grid-cols-3 gap-2">
+                {Object.entries(cfg.tiers)
+                  .map(([tKey, tCfg]) => {
+                    const tNum = parseInt(tKey, 10);
+                    if (Number.isNaN(tNum) || tNum === 0) return null;
+
+                    const tIconPath = tCfg.icon_key
+                      ? getTraitIconPath(slotKey, tNum, tCfg.icon_key)
+                      : null;
+
+                    if (!tIconPath) return null;
+
+                    const isCurrent = tNum === tierNum;
+
+                    return (
+                      <div key={tKey} className="flex flex-col items-center">
+                        <div
+                          style={{
+                            width: 60,
+                            height: 60,
+                            borderRadius: 12,
+                            overflow: "hidden",
+                            border: isCurrent
+                              ? "2px solid rgb(59,130,246)"
+                              : "1px solid rgba(30,64,175,0.5)",
+                            background:
+                              "radial-gradient(circle at 30% 20%, rgba(96,165,250,0.25), transparent 60%)",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                          }}
+                        >
+                          <img
+                            src={tIconPath}
+                            alt={tCfg?.name || `T${tNum}`}
+                            style={{
+                              maxWidth: "90%",
+                              maxHeight: "90%",
+                              objectFit: "contain",
+                              display: "block",
+                            }}
+                            onError={(e) => {
+                              e.currentTarget.style.display = "none";
+                            }}
+                          />
+                        </div>
+                        <div className="mt-1 text-[9px] text-slate-400">
+                          T{tNum}
+                        </div>
+                      </div>
+                    );
+                  })}
               </div>
             )}
-          </section>
+          </div>
         )}
+      </div>
+    </div>
+  );
+}
 
-        {!profile && !loading && !error && (
-          <p className="text-xs text-slate-500">
-            Enter a Base wallet address and click{" "}
-            <span className="text-sky-400 font-semibold">
-              Load Beast Profile
-            </span>{" "}
-            to see the Beast Score, traits and onchain snapshot.
-          </p>
-        )}
-      </main>
+function RowInfoLines({ lines }) {
+  return (
+    <div className="grid gap-2 rounded-xl border border-slate-800 bg-slate-900/40 px-3 py-2 text-[11px] text-slate-400 md:grid-cols-2">
+      {lines.map((line, idx) => (
+        <div key={idx} className="flex items-center">
+          {line}
+        </div>
+      ))}
     </div>
   );
 }

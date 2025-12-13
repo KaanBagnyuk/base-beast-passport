@@ -1,6 +1,6 @@
 {
   "size": {
-    "display_name": "Size",
+    "display_name": "Body Size",
     "metric": "activity_days",
     "tiers": {
       "0": { "name": "Wisp", "icon_key": "size_t0_wisp" },
@@ -11,6 +11,7 @@
       "5": { "name": "Titan of Base", "icon_key": "size_t5_titan_of_base" }
     }
   },
+
   "muscles": {
     "display_name": "Muscles",
     "metric": "tx_count",
@@ -23,6 +24,7 @@
       "5": { "name": "Chainbreaker", "icon_key": "muscles_t5_chainbreaker" }
     }
   },
+
   "weapon": {
     "display_name": "Weapon",
     "metric": "defi_swaps",
@@ -35,6 +37,7 @@
       "5": { "name": "Based War Hammer", "icon_key": "weapon_t5_based_war_hammer" }
     }
   },
+
   "shield": {
     "display_name": "Shield",
     "metric": "liquidity_yield",
@@ -47,6 +50,7 @@
       "5": { "name": "Astral Fortress", "icon_key": "shield_t5_astral_fortress" }
     }
   },
+
   "armor": {
     "display_name": "Armor",
     "metric": "builder",
@@ -59,6 +63,7 @@
       "5": { "name": "Godsmith Based Armor", "icon_key": "armor_t5_godsmith_based_armor" }
     }
   },
+
   "neck_medallion": {
     "display_name": "Neck Medallion",
     "metric": "nft_mints",
@@ -71,6 +76,7 @@
       "5": { "name": "Whale Relic", "icon_key": "neck_t5_whale_relic" }
     }
   },
+
   "helmet": {
     "display_name": "Helmet",
     "metric": "social",
@@ -83,6 +89,7 @@
       "5": { "name": "Voice of Base", "icon_key": "helmet_t5_voice_of_base" }
     }
   },
+
   "ring": {
     "display_name": "Ring",
     "metric": "gas_spent",
@@ -95,6 +102,7 @@
       "5": { "name": "Eternal Gas Engine", "icon_key": "ring_t5_eternal_gas_engine" }
     }
   },
+
   "boots": {
     "display_name": "Boots",
     "metric": "defi_volume",
@@ -107,6 +115,7 @@
       "5": { "name": "Warp Boots", "icon_key": "boots_t5_warp_boots" }
     }
   },
+
   "earring": {
     "display_name": "Earring",
     "metric": "coinbase_verified",
