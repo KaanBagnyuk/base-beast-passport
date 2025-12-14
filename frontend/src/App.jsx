@@ -337,14 +337,14 @@ function App() {
       />
 
       {/* Внешний фон во всю ширину */}
-          <main className="px-6 pb-16 pt-8">
-      {error && (
-        <div className="mb-4 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-          {error}
-        </div>
-      )}
-      {mainContent}
-    </main>
+      <main className="pl-0 pr-[1cm] pb-16 pt-8">
+        {error && (
+          <div className="mb-4 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+            {error}
+          </div>
+        )}
+        {mainContent}
+      </main>
     </div>
   );
 }
@@ -356,7 +356,7 @@ function App() {
 function Header({ isConnected, walletAddress, onConnect, isConnecting }) {
   return (
     <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4">
+      <div className="flex items-center justify-between pl-0 pr-[1cm] py-4">
         <div className="flex items-center gap-2">
           <div className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-500/20 text-xl">
             🐉
@@ -689,7 +689,7 @@ function BeastDashboard({
           <div className="w-full flex justify-center">
             {!hasImage ? (
               <div className="flex flex-col items-center">
-                <div className="relative h-[480px] w-[480px] max-w-full overflow-hidden rounded-3xl border border-slate-800 bg-slate-900/40 flex items-center justify-center">
+                <div className="relative h-[640px] w-[640px] max-w-full overflow-hidden rounded-3xl border border-slate-800 bg-slate-900/40 flex items-center justify-center">
                   <span className="text-5xl">🐉</span>
                 </div>
                 <div className="mt-1 text-center text-[11px] text-slate-500">
@@ -698,7 +698,7 @@ function BeastDashboard({
               </div>
             ) : (
               <div className="flex flex-col items-center">
-                <div className="group relative h-[480px] w-[480px] max-w-full overflow-hidden rounded-3xl border border-slate-800 bg-slate-950/80 p-1">
+                <div className="group relative h-[640px] w-[640px] max-w-full overflow-hidden rounded-3xl border border-slate-800 bg-slate-950/80 p-1">
                   <div className="relative h-full w-full overflow-hidden rounded-2xl bg-black">
                     {isBodyPlaying && hasVideo ? (
                       <video
@@ -937,28 +937,28 @@ function BeastBodySection({ metricsByKey }) {
   const musclesStatus = txCount?.tier_label || "Unknown";
 
   return (
-    <div className="mx-auto w-full max-w-sm rounded-2xl border border-slate-800 bg-slate-900/40 p-4 text-xs">
+    <div className="mx-auto w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900/40 p-5 text-xs">
       <div className="flex items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-slate-100">Beast Body</h3>
-        <span className="text-[11px] uppercase tracking-wide text-slate-500">
+        <h3 className="text-base font-semibold text-slate-100">Beast Body</h3>
+        <span className="text-[12px] uppercase tracking-wide text-slate-500">
           Activity Days &amp; Tx Count
         </span>
       </div>
 
-      <p className="mt-2 text-[11px] text-slate-400">
+      <p className="mt-2 text-[12px] text-slate-400">
         Your body size and muscles evolve from your activity days and total
         transactions in Base.
       </p>
 
       <div className="mt-3 grid gap-3 md:grid-cols-2">
-        <div className="rounded-xl bg-slate-900/70 p-3">
-          <div className="text-[11px] uppercase tracking-wide text-slate-500">
+        <div className="rounded-xl bg-slate-900/70 p-4">
+          <div className="text-[12px] uppercase tracking-wide text-slate-500">
             Size
           </div>
-          <div className="mt-1 text-sm font-semibold text-slate-100">
+          <div className="mt-1 text-base font-semibold text-slate-100">
             {sizeStatus}
           </div>
-          <div className="mt-1 text-[11px] text-slate-400">
+          <div className="mt-1 text-[12px] text-slate-400">
             Activity Days –{" "}
             <span className="font-mono text-slate-200">
               {activity?.raw_value ?? "–"}
@@ -966,14 +966,14 @@ function BeastBodySection({ metricsByKey }) {
           </div>
         </div>
 
-        <div className="rounded-xl bg-slate-900/70 p-3">
-          <div className="text-[11px] uppercase tracking-wide text-slate-500">
+        <div className="rounded-xl bg-slate-900/70 p-4">
+          <div className="text-[12px] uppercase tracking-wide text-slate-500">
             Muscles
           </div>
-          <div className="mt-1 text-sm font-semibold text-slate-100">
+          <div className="mt-1 text-base font-semibold text-slate-100">
             {musclesStatus}
           </div>
-          <div className="mt-1 text-[11px] text-slate-400">
+          <div className="mt-1 text-[12px] text-slate-400">
             Tx Count –{" "}
             <span className="font-mono text-slate-200">
               {txCount?.raw_value ?? "–"}
@@ -1030,38 +1030,38 @@ function EquipmentCard({
   const [isPlaying, setIsPlaying] = useState(false);
   const [isGalleryOpen, setIsGalleryOpen] = useState(false);
 
-  const boxSize = 170;
+  const boxSize = 240;
   const hasTierConfig = cfg.tiers && Object.keys(cfg.tiers).length > 0;
 
   return (
-    <div className="w-full max-w-[320px] rounded-2xl border border-slate-800 bg-slate-900/40 p-3 text-xs">
+    <div className="w-full max-w-[420px] rounded-2xl border border-slate-800 bg-slate-900/40 p-4 text-xs">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-slate-800/80 text-base">
+          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-800/80 text-lg">
             {slotEmoji}
           </div>
           <div>
-            <div className="text-[13px] font-semibold text-slate-100">
+            <div className="text-[15px] font-semibold text-slate-100">
               {title}
             </div>
-            <div className="text-[11px] text-slate-500">{description}</div>
+            <div className="text-[12px] text-slate-500">{description}</div>
           </div>
         </div>
         {typeof tier === "number" && (
-          <div className="text-right text-[11px] text-slate-400">
+          <div className="text-right text-[12px] text-slate-400">
             <div className="font-mono text-slate-200">T{tier}</div>
-            <div className="text-[10px] text-slate-500">tier</div>
+            <div className="text-[11px] text-slate-500">tier</div>
           </div>
         )}
       </div>
 
-      <div className="mt-2 text-[11px] text-slate-300">
+      <div className="mt-2 text-[12px] text-slate-300">
         {statusLabel} –{" "}
         <span className="font-semibold text-slate-100">{tierLabel}</span>
       </div>
 
-      <div className="mt-2 rounded-xl bg-slate-900/80 p-2 text-[11px] text-slate-500">
-        <div className="text-[10px] uppercase tracking-wide text-slate-500">
+      <div className="mt-2 rounded-xl bg-slate-900/80 p-3 text-[12px] text-slate-500">
+        <div className="text-[11px] uppercase tracking-wide text-slate-500">
           Visual slot
         </div>
 
@@ -1189,8 +1189,8 @@ function EquipmentCard({
                       <div key={tKey} className="flex flex-col items-center">
                         <div
                           style={{
-                            width: 60,
-                            height: 60,
+                            width: 80,
+                            height: 80,
                             borderRadius: 12,
                             overflow: "hidden",
                             border: isCurrent
@@ -1217,7 +1217,7 @@ function EquipmentCard({
                             }}
                           />
                         </div>
-                        <div className="mt-1 text-[9px] text-slate-400">
+                        <div className="mt-1 text-[10px] text-slate-400">
                           T{tNum}
                         </div>
                       </div>
